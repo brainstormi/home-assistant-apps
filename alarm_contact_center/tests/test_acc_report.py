@@ -75,3 +75,51 @@ class ReporterTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AssistantContextTests(unittest.IsolatedAsyncioTestCase):
+    def test_text(self):
+        from app.report import CONTEXT_MAX, assistant_context
+
+        inc = {"kind": "alarm", "sensor": "Puerta del garaje", "started": NOW.replace(hour=14, minute=33).isoformat(),
+               "status": "acknowledged", "acknowledged_by": "Luis", "ack_via": "Telegram",
+               "acknowledged_at": NOW.replace(hour=14, minute=35).isoformat(), "phase": "open", "persons": [{"camera": "Portal"}],
+               "events": [{"t": NOW.replace(hour=14, minute=32).isoformat(), "kind": "person", "text": "Persona en Portal",
+                           "detail": "Alerta de Frigate · antes del disparo"},
+                          {"t": NOW.replace(hour=14, minute=33).isoformat(), "kind": "wait", "text": "Esperando 30 s", "detail": ""}]}
+        text = assistant_context(inc)
+        self.assertIn("gestionada por Luis (Telegram) desde las 14:35. Sigue activa hasta que se desarme.", text)
+        self.assertIn("Personas vistas por las cámaras: 1 (Portal).", text)
+        self.assertIn("14:32:00 Persona en Portal (Vista por la cámara · antes del disparo)", text)
+        self.assertNotIn("Esperando", text)
+        self.assertNotIn("Frigate", text)
+        many = dict(inc, events=[{"t": NOW.isoformat(), "kind": "sensor", "text": f"Ventana {i}: se abre", "detail": ""} for i in range(500)])
+        text = assistant_context(many)
+        self.assertLessEqual(len(text), CONTEXT_MAX)
+        self.assertIn("Ventana 499: se abre", text)  # the most recent are kept
+        self.assertIn("entradas anteriores omitidas", text)
+        self.assertEqual(assistant_context(None), "")
+
+    async def test_calls_pass_the_context_entity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "c.json")
+            store.save_settings({"call_delay": 0, "rounds": 1})
+            c = store.save_contact({"kind": "external", "name": "Pablo", "phone": "600000003"}, PinStatus("none", []))
+            port = FakePort({"600000003": [{"resultado": "confirmed"}, {"resultado": "confirmed"}, {"resultado": "confirmed"}]})
+            engine = Engine(store, port, IncidentLog(Path(tmp) / "i.json"), time_scale=0)
+            await engine.on_alarm_state("armed_away")
+            await engine.on_alarm_state("triggered", TRIGGER)
+            await engine.current.task
+            await engine.on_alarm_state("disarmed")
+            engine.current.record_until = 0
+            await engine._closer(engine.current)
+            await engine.start_drill([c["id"]], "")
+            await engine.current.task
+            self.assertEqual(port.calls[0]["contexto_entidad"], "sensor.alarm_contact_center_incident")
+            self.assertEqual(port.calls[1]["contexto_entidad"], "sensor.alarm_contact_center_drill")
+            await engine.on_alarm_state("disarmed")
+            engine.current.record_until = 0
+            await engine._closer(engine.current)
+            await engine.start_test(c["id"])
+            await engine.current.task
+            self.assertNotIn("contexto_entidad", port.calls[2])  # test calls have no incident to tell

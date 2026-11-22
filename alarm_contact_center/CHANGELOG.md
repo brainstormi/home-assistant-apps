@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0
+
+- The phone assistant knows the incident: the incident sensors carry `assistant_context` (state and timeline in Spanish, up to 2000 characters, most recent kept), and alarm and drill calls pass `contexto_entidad` so the assistant reads it live (Asterisk Realtime Bridge 0.11+).
+
 ## 0.11.0
 
 Without a phone line.

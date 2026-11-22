@@ -61,6 +61,7 @@ TEST_PREFIX = "Esto es una prueba de Alarm Contact Center. "
 DRILL_PREFIX = "Esto es un simulacro de alarma. "
 SNAPSHOT_WAITS_S = (8, 20, 40)  # when to try copying a snapshot after the alert
 CHAIN_KINDS = ("alarm", "drill")
+CONTEXT_ENTITY = {"alarm": "sensor.alarm_contact_center_incident", "drill": "sensor.alarm_contact_center_drill"}
 AFTER_CLOSE = "después del desarme"
 CLOSE_POLL_S = 3600  # the closer re-checks at least this often  # incidents that run the full chain
 AFTER_TEXT = {
@@ -269,6 +270,8 @@ class Incident:
             "status": self.status,
             "active": self.task is not None and not self.task.done(),
             "acknowledged_by": self.acknowledged_by,
+            "acknowledged_at": dt.datetime.fromtimestamp(self.acknowledged_at).astimezone().isoformat(timespec="seconds")
+            if self.acknowledged_at else None,
             "participants": sorted(self.only_contacts) if self.only_contacts is not None else None,
             "ack_via": self.ack_via,
             "events": copy.deepcopy(self.events),
@@ -746,6 +749,8 @@ class Engine:
                 "mensaje": message,
                 "perfil": "Management" if manage else "QueryOnly",
                 "persona": contact["person"] or contact["name"],
+                # The assistant reads the incident's timeline from this sensor (Bridge 0.11+).
+                **({"contexto_entidad": CONTEXT_ENTITY[inc.kind]} if inc.kind in CONTEXT_ENTITY else {}),
                 "intentos": 1,
                 "tiempo_respuesta": settings["answer_timeout"],
                 "requiere_confirmacion": True,

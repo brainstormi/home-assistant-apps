@@ -90,6 +90,10 @@ Setting up, in **Ajustes**:
 
 The SMTP password and the bot token are stored inside the App only: the panel shows whether they are set but never their value, and exports leave them out (an import keeps the ones already stored).
 
+## The phone assistant knows the incident
+
+Both incident sensors carry an `assistant_context` attribute: a short Spanish text with the state (who took charge, whether it is disarmed) and the timeline with times, the most recent entries kept within 2000 characters. With the Asterisk Realtime Bridge 0.11 or later, every alarm or drill call passes `contexto_entidad` (the incident sensor, or the drill sensor in drills) to `script.llamada_saliente`; during that call the assistant can read it, live, with its read-only `home_status` tool, so it can answer "what happened?", "has a window been opened?", "who has been called?" or "has anyone been seen?". The drill sensor is read only during drill calls; it stays out of Assist.
+
 ## Dashboard card
 
 The App installs a dashboard card, **Alarm Contact Center** (`custom:alarm-contact-center-card`), with the latest incident: its state (in progress, waiting for the disarm, disarmed and still recording, closed), the summary, the timeline with the same coloured dots as the panel, and the people seen by the cameras; tapping one opens the photo and its video. It works for every household user, in the browser and in the mobile app.
@@ -116,7 +120,7 @@ The configuration is stored in `/data/contact_center.json` the last 50 incidents
 ## Requirements
 
 - Optional: the Frigate integration (or Frigate's address), for photos and clips, and the MQTT integration, for the Assist sensor.
-- The Asterisk Realtime Bridge App (0.9.2 or later) and its call script (`script.llamada_saliente`). When the Bridge is installed from the same repository as this App, its id is found automatically; otherwise set it in **Ajustes → Integración con Home Assistant**, where the alarm entity and the call script can be changed too.
+- The Asterisk Realtime Bridge App (0.9.2 or later; 0.11 or later for the assistant to know the incident) and its call script (`script.llamada_saliente`). When the Bridge is installed from the same repository as this App, its id is found automatically; otherwise set it in **Ajustes → Integración con Home Assistant**, where the alarm entity and the call script can be changed too.
 
 ## Options
 

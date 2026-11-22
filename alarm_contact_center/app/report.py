@@ -130,7 +130,63 @@ def attributes(inc: dict[str, Any] | None) -> dict[str, Any]:
         "disarmed": bool(inc.get("disarmed")),
         "recording_until": inc.get("recording_until"),
         "events": [card_event(e) for e in (inc.get("events") or [])][-MAX_EVENTS:],
+        # Read by the phone assistant (Asterisk Realtime Bridge 0.11+, home_status "context").
+        "assistant_context": assistant_context(inc),
     }
+
+
+CONTEXT_MAX = 2000
+PHASE_CONTEXT = {
+    "calling": "Se está avisando a los contactos.",
+    "open": "Sigue activa hasta que se desarme.",
+    "closing": "Ya está desarmada; se sigue registrando unos minutos.",
+    "closed": "El incidente está cerrado.",
+}
+SKIP_IN_CONTEXT = {"wait", "profile", "after"}
+OMITTED = "… (entradas anteriores omitidas)"  # bookkeeping the assistant does not need
+
+
+def _hms(iso: str) -> str:
+    return iso[11:19] if iso and len(iso) >= 19 else ""
+
+
+def assistant_context(inc: dict[str, Any] | None) -> str:
+    """What happened, for the phone assistant: a header with the state and the
+    timeline with times, most recent kept when it is too long."""
+    if not inc:
+        return ""
+    word = "Simulacro de alarma" if inc.get("kind") == "drill" else "Alarma"
+    head = f"{word} disparada {_when(inc.get('started', ''))} por {inc.get('sensor') or 'un sensor'}."
+    status = STATUS_TEXT.get(inc.get("status", ""), inc.get("status", ""))
+    if inc.get("acknowledged_by"):
+        at = _hms(inc.get("acknowledged_at") or "")[:5]
+        status = f"gestionada por {inc['acknowledged_by']}" + (f" ({inc.get('ack_via')})" if inc.get("ack_via") else "") \
+            + (f" desde las {at}" if at else "")
+    lines = [head, f"Estado: {status}. {PHASE_CONTEXT.get(inc.get('phase', ''), '')}".strip()]
+    persons = inc.get("persons") or []
+    if persons:
+        cams = sorted({p["camera"] for p in persons})
+        lines.append(f"Personas vistas por las cámaras: {len(persons)} ({', '.join(cams)}).")
+    timeline = []
+    for e in inc.get("events") or []:
+        if e.get("kind") in SKIP_IN_CONTEXT:
+            continue
+        detail = card_event(e)["detail"]
+        timeline.append(f"{_hms(e.get('t', ''))} {e.get('text', '')}" + (f" ({detail})" if detail else ""))
+    head_text = "\n".join(lines) + "\nCronología:\n"
+    budget = CONTEXT_MAX - len(head_text) - len(OMITTED) - 1
+    kept: list[str] = []
+    used = 0
+    for line in reversed(timeline):  # the most recent entries are the ones to keep
+        if used + len(line) + 1 > budget:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    kept.reverse()
+    if len(kept) < len(timeline):
+        kept.insert(0, OMITTED)
+    timeline = kept
+    return (head_text + "\n".join(timeline))[:CONTEXT_MAX]
 
 
 def card_event(e: dict[str, Any]) -> dict[str, Any]:
