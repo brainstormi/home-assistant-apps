@@ -535,7 +535,7 @@ async def _run() -> None:
     reporter = Reporter(port_.mqtt_publish, incidents)
     reporter.load()
     engine.listeners.append(reporter.on_change)
-    notifier = Notifier(store, media)
+    notifier = Notifier(store, media, frigate=port_.frigate)
     engine.listeners.append(notifier.on_change)
     loop = asyncio.get_running_loop()
     app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate, PanelTools(store))

@@ -38,6 +38,9 @@ TELEGRAM_API = "https://api.telegram.org"
 TELEGRAM_MAX = 4000  # Telegram's limit is 4096 characters per message
 EDIT_EVERY_S = 4.0  # at most one edit per message this often (Telegram rate limits)
 MAX_PHOTOS_EMAIL = 12
+TELEGRAM_VIDEO_MAX = 49 * 1024 * 1024  # bots can upload up to 50 MB
+VIDEO_POLL_S = 10  # how often Frigate is asked whether the event is over
+VIDEO_POLLS = 120  # ...for up to 20 minutes
 
 STATUS_TEXT = {
     "waiting": "esperando antes de llamar",
@@ -96,15 +99,50 @@ def started_text(inc: dict[str, Any]) -> str:
         return ""
 
 
+# Same colours as the panel's timeline dots.
+KIND_DOT = {
+    "triggered": "🔴", "person": "🔴", "error": "🔴", "trunk_down": "🔴", "notify_error": "🔴",
+    "confirmed": "🟢", "acknowledged": "🟢", "disarmed": "🟢", "resolved": "🟢", "trunk_ok": "🟢",
+    "sensor": "🟡", "profile": "🟡", "voicemail": "🟡", "round": "🟡", "answered": "🟡", "failed": "🟡",
+    "timeout": "🟡", "limit": "🟡",
+    "call": "🔵",
+    "closed": "🏁",
+}
+
+
+def media_numbers(inc: dict[str, Any]) -> dict[str, int]:
+    """review id -> number shown next to the entry and on its photo and video (📷1, 🎬1)."""
+    out: dict[str, int] = {}
+    for e in inc.get("events") or []:
+        rid = (e.get("media") or {}).get("review_id")
+        if rid and rid not in out:
+            out[rid] = len(out) + 1
+    return out
+
+
 def telegram_text(inc: dict[str, Any]) -> str:
-    head = [("🧪 " if inc.get("kind") == "drill" else "🚨 ") + title(inc),
-            f"Disparo: {started_text(inc)}", status_line(inc), "", "Cronología:"]
-    lines = timeline_lines(inc)
+    """HTML (parse_mode=HTML): bold title, a coloured dot per entry, numbered photos."""
+    esc = html.escape
+    numbers = media_numbers(inc)
+    head = [f"<b>{'🧪' if inc.get('kind') == 'drill' else '🚨'} {esc(title(inc))}</b>",
+            f"Disparo: {esc(started_text(inc))}", f"<b>{esc(status_line(inc))}</b>", ""]
+    lines = []
+    for e in inc.get("events") or []:
+        n = numbers.get((e.get("media") or {}).get("review_id"))
+        tag = f" 📷{n}" if n else ""
+        detail = f" <i>({esc(e['detail'])})</i>" if e.get("detail") else ""
+        lines.append(f"{KIND_DOT.get(e.get('kind', ''), '⚪')} <code>{esc(_clock(e.get('t', '')))}</code> {esc(e.get('text', ''))}{tag}{detail}")
     text = "\n".join(head + lines)
     while len(text) > TELEGRAM_MAX and len(lines) > 5:
         lines = lines[1:]
         text = "\n".join(head + ["…"] + lines)
     return text[:TELEGRAM_MAX]
+
+
+def media_caption(inc: dict[str, Any], e: dict[str, Any], icon: str) -> str:
+    n = media_numbers(inc).get((e.get("media") or {}).get("review_id"), 0)
+    caption = f"{icon}{n} · {e.get('text', '')} · {_clock(e.get('t', ''))}"
+    return caption + (f" · {e['detail']}" if e.get("detail") else "")
 
 
 def email_parts(inc: dict[str, Any], final: bool) -> tuple[str, str, str]:
@@ -116,7 +154,8 @@ def email_parts(inc: dict[str, Any], final: bool) -> tuple[str, str, str]:
              if final else "Te enviaremos el informe final cuando se desarme la alarma y se cierre el incidente.")
     plain = "\n".join([title(inc), f"Disparo: {started_text(inc)}", status_line(inc), "", intro, "", "Cronología:"] + lines)
     rows = "".join(
-        f"<tr><td style='padding:2px 12px 2px 0;color:#555;white-space:nowrap;vertical-align:top'>{html.escape(_clock(e.get('t', '')))}</td>"
+        f"<tr><td style='padding:2px 6px 2px 0;vertical-align:top'>{KIND_DOT.get(e.get('kind', ''), '⚪')}</td>"
+        f"<td style='padding:2px 12px 2px 0;color:#555;white-space:nowrap;vertical-align:top'>{html.escape(_clock(e.get('t', '')))}</td>"
         f"<td style='padding:2px 0'>{html.escape(e.get('text', ''))}"
         + (f"<br><span style='color:#777;font-size:13px'>{html.escape(e['detail'])}</span>" if e.get("detail") else "")
         + "</td></tr>"
@@ -155,12 +194,32 @@ class Telegram:
             raise NotifyError(desc)
         return body.get("result")
 
-    async def send(self, chat_id: str, text: str, silent: bool = False) -> int:
-        result = await self._call("sendMessage", {"chat_id": chat_id, "text": text, "disable_notification": silent})
+    async def send(self, chat_id: str, text: str, silent: bool = False, html_mode: bool = False) -> int:
+        data: dict[str, Any] = {"chat_id": chat_id, "text": text, "disable_notification": silent}
+        if html_mode:
+            data["parse_mode"] = "HTML"
+        result = await self._call("sendMessage", data)
         return int(result["message_id"])
 
-    async def edit(self, chat_id: str, message_id: int, text: str) -> None:
-        await self._call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text})
+    async def edit(self, chat_id: str, message_id: int, text: str, html_mode: bool = True) -> None:
+        data: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text}
+        if html_mode:
+            data["parse_mode"] = "HTML"
+        await self._call("editMessageText", data)
+
+    async def video(self, chat_id: str, data: bytes, caption: str) -> None:
+        import aiohttp
+
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        form.add_field("caption", caption[:1000])
+        form.add_field("supports_streaming", "true")
+        form.add_field("video", data, filename="clip.mp4", content_type="video/mp4")
+        old, self.timeout = self.timeout, 120  # uploads take longer
+        try:
+            await self._call("sendVideo", form)
+        finally:
+            self.timeout = old
 
     async def photo(self, chat_id: str, data: bytes, caption: str) -> None:
         import aiohttp
@@ -233,6 +292,7 @@ class _State:
         self.tg_messages: dict[str, int] = {}  # chat id -> live message id
         self.tg_text: dict[str, str] = {}
         self.photos_sent: set[str] = set()
+        self.videos: set[str] = set()  # events whose clip is being or has been sent
         self.milestones: set[str] = set()
         self.first_email = False
         self.final_email = False
@@ -246,9 +306,10 @@ class Notifier:
     """Engine listener: called with the Incident after every change."""
 
     def __init__(self, store: Any, media: Any = None, time_scale: float = 1.0,
-                 telegram: Any = None, mailer: Any = None) -> None:
+                 telegram: Any = None, mailer: Any = None, frigate: Any = None) -> None:
         self.store = store
         self.media = media
+        self.frigate = frigate  # FrigateAPI: to know when an event is over and fetch its clip
         self.time_scale = time_scale
         self._telegram = telegram  # tests inject fakes
         self._mailer = mailer
@@ -349,7 +410,7 @@ class Notifier:
             chat = c["telegram_chat_id"]
             if chat not in st.tg_messages:
                 try:
-                    st.tg_messages[chat] = await tg.send(chat, text)
+                    st.tg_messages[chat] = await tg.send(chat, text, html_mode=True)
                     st.tg_text[chat] = text
                 except Exception as err:  # noqa: BLE001
                     self._failed(inc, f"Telegram a {c['name']}", err)
@@ -373,12 +434,18 @@ class Notifier:
                 photo = self.media.read(inc.id, snap)
                 if not photo:
                     continue
-                caption = f"{e['text']} · {_clock(e['t'])}" + (f" · {e['detail']}" if e.get("detail") else "")
+                caption = media_caption(data, e, "📷")
                 for c in chats:
                     try:
                         await tg.photo(c["telegram_chat_id"], photo, caption)
                     except Exception as err:  # noqa: BLE001
                         self._failed(inc, f"foto por Telegram a {c['name']}", err)
+        if self.store.settings()["send_videos_telegram"] and self.frigate is not None and self.media is not None and chats:
+            for e in data["events"]:
+                event_id = (e.get("media") or {}).get("event_id")
+                if event_id and event_id not in st.videos:
+                    st.videos.add(event_id)
+                    self._spawn(self._video(inc, tg, e, event_id))
 
     async def _schedule_edit(self, inc: Any, st: _State, tg: Any, chats: list[dict[str, Any]]) -> None:
         if st.edit_task and not st.edit_task.done():
@@ -404,6 +471,45 @@ class Notifier:
         st.edit_task = asyncio.get_running_loop().create_task(edit())
         self.tasks.add(st.edit_task)
         st.edit_task.add_done_callback(self.tasks.discard)
+
+    async def _video(self, inc: Any, tg: Any, entry: dict[str, Any], event_id: str) -> None:
+        """Frigate has the clip once the event is over: wait for it, then send it."""
+        ended = False
+        for _ in range(VIDEO_POLLS):
+            try:
+                event = await asyncio.to_thread(self.frigate.event, event_id)
+            except Exception as err:  # noqa: BLE001
+                log.info("[%s] Frigate event %s: %s", inc.id, event_id, err)
+                event = {}
+            if event.get("end_time"):
+                ended = event.get("has_clip", True)
+                break
+            await asyncio.sleep(VIDEO_POLL_S * self.time_scale)
+        if not ended:
+            log.warning("[%s] no clip for %s", inc.id, event_id)
+            return
+        try:
+            path = self.media.clip_path(event_id)
+            if not path.exists():
+                def fetch() -> None:
+                    with self.frigate.open(event_id, "clip.mp4") as resp:
+                        self.media.cache_clip(event_id, resp)
+                await asyncio.to_thread(fetch)
+            data = path.read_bytes()
+        except Exception as err:  # noqa: BLE001
+            log.warning("[%s] clip %s not available: %s", inc.id, event_id, err)
+            return
+        if len(data) > TELEGRAM_VIDEO_MAX:
+            log.warning("[%s] clip %s too large for Telegram (%d bytes)", inc.id, event_id, len(data))
+            return
+        caption = media_caption(inc.to_dict(), entry, "🎬")
+        for c in self.recipients(inc):
+            if not c["telegram_chat_id"]:
+                continue
+            try:
+                await tg.video(c["telegram_chat_id"], data, caption)
+            except Exception as err:  # noqa: BLE001
+                log.warning("[%s] video by Telegram to %s failed: %s", inc.id, c["name"], err)
 
     @staticmethod
     def _milestones(data: dict[str, Any]) -> list[tuple[str, str]]:
