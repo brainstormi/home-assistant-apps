@@ -178,6 +178,9 @@ class HAPort:
             raise HAError("Bridge App id unknown: set it in Ajustes")
         await self.conn.call_service("hassio", "addon_stdin", {"addon": addon, "input": command})
 
+    async def bridge_command(self, command: dict[str, Any]) -> None:
+        await self._bridge(command)
+
     async def bridge_note(self, call_id: str, text: str, resolve: bool = False) -> None:
         command: dict[str, Any] = {"action": "note", "call_id": call_id, "text": text}
         if resolve:
@@ -198,9 +201,11 @@ class HAPort:
         return entity_id
 
 
-async def wire(conn: HAConnection, engine: Engine, store: Store) -> None:
-    """(Re)subscribe everything after each connection and catch up on the alarm state."""
-    alarm_entity = store.settings()["alarm_entity"]
+async def wire(conn: HAConnection, engine: Engine, store: Store, trunk: Any = None) -> None:
+    """(Re)subscribe everything after each connection and catch up on the current states."""
+    settings = store.settings()
+    alarm_entity = settings["alarm_entity"]
+    watched = [settings["trunk_entity"], settings["ami_entity"]] if trunk is not None else []
 
     async def on_alarm(event: dict[str, Any]) -> None:
         to_state = ((event.get("variables") or {}).get("trigger") or {}).get("to_state") or {}
@@ -217,8 +222,26 @@ async def wire(conn: HAConnection, engine: Engine, store: Store) -> None:
     await conn.subscribe({"type": "subscribe_events", "event_type": "asterisk_realtime_bridge_call"}, on_bridge)
     await conn.subscribe({"type": "subscribe_events", "event_type": "mobile_app_notification_action"}, on_action)
 
+    if trunk is not None:
+        from .trunk import TRUNK_EVENT
+
+        async def on_line(event: dict[str, Any]) -> None:
+            trig = (event.get("variables") or {}).get("trigger") or {}
+            to_state = trig.get("to_state") or {}
+            if to_state:
+                await trunk.on_entity_state(str(trig.get("entity_id") or to_state.get("entity_id") or ""), str(to_state.get("state") or ""))
+
+        async def on_trunk_test(event: dict[str, Any]) -> None:
+            await trunk.on_bridge_event(event.get("data") or {})
+
+        await conn.subscribe({"type": "subscribe_trigger", "trigger": {"platform": "state", "entity_id": watched}}, on_line)
+        await conn.subscribe({"type": "subscribe_events", "event_type": TRUNK_EVENT}, on_trunk_test)
+
     # Catch up: the alarm may have triggered while we were disconnected or restarting.
     states = await conn.command({"type": "get_states"})
+    for s in states or []:
+        if s.get("entity_id") in watched:
+            await trunk.on_entity_state(s["entity_id"], str(s.get("state") or ""))
     current = next((s for s in states or [] if s.get("entity_id") == alarm_entity), None)
     if current:
         first_time = engine.alarm_state == ""

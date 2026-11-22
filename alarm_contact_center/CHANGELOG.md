@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+Phase 5: trunk monitoring.
+
+- Watches the trunk registration and the Asterisk (AMI) connection. If either stays down for the configured minutes, everyone with the HA app is told, and again when it comes back. Short blips are ignored.
+- Real test call on a schedule (daily, every 6 hours or weekly, at a chosen hour) or from the panel: the Asterisk Realtime Bridge calls the line's own number through the trunk and reports whether it went out and came back (`trunk_test` command, `asterisk_realtime_bridge_trunk` event). A failing test alerts once and announces the recovery. Tests wait while the line is busy with an alarm, a drill or a test call.
+- A Bridge that does not answer the test yet is shown in the panel but never triggers an alert.
+- Home page: "Línea telefónica" tile with the last test; settings for the line's own number, schedule, hour and the watched entities; "Probar la troncal ahora" button.
+- Line events in the incident history.
+- Docker health check on the panel port: with the App's watchdog switch on, the Supervisor restarts it if the panel stops answering.
+
 ## 0.3.0
 
 Needs Asterisk Realtime Bridge 0.9.2 or later.
