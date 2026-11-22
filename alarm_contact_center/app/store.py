@@ -66,6 +66,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "send_photos_external": True,
     "incident_entities": [],
     "person_entities": [],  # Frigate person helpers (input_text); empty = detect them
+    "frigate_url": "",  # Frigate's API address; empty = taken from the Frigate integration
     # Empty means DEFAULT_PIN_ENTITY (what the Bridge publishes out of the box).
     "bridge_pin_entity": "",
     # How this installation is wired together.
@@ -297,6 +298,10 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
     if bad:
         errors["person_entities"] = "Tienen que ser helpers input_text: " + ", ".join(bad[:3])
     s["person_entities"] = list(dict.fromkeys(helpers))[:20]
+
+    s["frigate_url"] = str(s["frigate_url"] or "").strip().rstrip("/")
+    if s["frigate_url"] and not re.match(r"^https?://[^\s/]+(:\d+)?(/[^\s]*)?$", s["frigate_url"]):
+        errors["frigate_url"] = "Tiene que ser una dirección como http://servidor:5000."
 
     s["bridge_pin_entity"] = str(s["bridge_pin_entity"] or "").strip()
     if s["bridge_pin_entity"] and not _ENTITY_RE.match(s["bridge_pin_entity"]):

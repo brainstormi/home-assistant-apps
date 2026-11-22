@@ -577,6 +577,7 @@ function showSettings(draft = null, errors = {}) {
   const retention = num("media_retention_days", st.media_retention_days, 7, 365);
   const photos = el("input", { id: "send_photos_external", type: "checkbox", checked: st.send_photos_external });
   const helpers = el("textarea", { id: "person_entities", rows: "3", placeholder: "input_text.persona_huerto" }, (st.person_entities || []).join("\n"));
+  const frigateUrl = el("input", { id: "frigate_url", type: "url", placeholder: "Automática", value: st.frigate_url || "" });
   const entities = el("textarea", { id: "incident_entities", rows: "4", placeholder: "binary_sensor.movimiento_salon_occupancy" }, (st.incident_entities || []).join("\n"));
   const pinEntity = el("input", { id: "bridge_pin_entity", type: "text", value: st.bridge_pin_entity, placeholder: "sensor.asterisk_realtime_bridge_pin (por defecto)" });
 
@@ -606,6 +607,7 @@ function showSettings(draft = null, errors = {}) {
       send_photos_external: photos.checked,
       incident_entities: entities.value.split(/[\s,]+/).filter(Boolean),
       person_entities: helpers.value.split(/[\s,]+/).filter(Boolean),
+      frigate_url: frigateUrl.value.trim(),
       bridge_pin_entity: pinEntity.value,
     };
   }
@@ -674,7 +676,10 @@ function showSettings(draft = null, errors = {}) {
         field("media_retention_days", "Conservar fotos y vídeos (días)", retention, null, errors.media_retention_days),
         el("div", { class: "field" }, el("span", { class: "label" }, "Contactos externos"),
           el("label", { class: "check" }, photos, "Enviarles fotos por Telegram y correo"))),
-      field("person_entities", "Helpers con la última alerta de persona", helpers, frigateHelp(STATE), errors.person_entities)),
+      field("person_entities", "Helpers con la última alerta de persona", helpers, frigateHelp(STATE), errors.person_entities),
+      field("frigate_url", "Dirección de Frigate (fotos y vídeos)", frigateUrl,
+        (STATE.frigate || {}).api ? "Vacío: la de la integración de Frigate." : "No se encuentra la integración de Frigate: escribe su dirección, p. ej. http://servidor:5000.",
+        errors.frigate_url)),
 
     el("section", { class: "card", "aria-labelledby": "inc-h" },
       el("h2", { id: "inc-h", style: "font-size:17px" }, "Registro del incidente"),

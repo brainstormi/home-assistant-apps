@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2
+
+- Photos and clips come straight from Frigate's API, with the address taken from the Frigate integration (or set in Ajustes). The integration's notification proxy fails for requests coming through the Supervisor.
+- Retaining an event falls back to Frigate's API when the integration does not offer the command.
+
 ## 0.5.1
 
 - Log why a Frigate photo or clip could not be fetched.

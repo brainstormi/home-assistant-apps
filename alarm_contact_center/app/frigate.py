@@ -10,8 +10,7 @@ camera, an ``input_text`` helper with::
 
 for example ``1795354401.831865-vqtljq,1795354411.489668-aradwo``. The review id
 starts with the alert's start time (Unix seconds). The first detection id is the
-one Frigate's notification proxy serves a snapshot and a clip for
-(``/api/frigate/notifications/<detection id>/snapshot.jpg``). The value grows while
+Frigate event whose snapshot and clip represent the alert. The value grows while
 the alert is open, as Frigate adds detections.
 
 The App follows those helpers (configured, or detected by their value) and turns
@@ -24,6 +23,7 @@ from __future__ import annotations
 
 import re
 import time
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
@@ -138,3 +138,50 @@ def pick_helpers(configured: Iterable[str], states: Iterable[dict[str, Any]]) ->
     configured = list(configured)
     ids = configured or [eid for eid, s in by_id.items() if looks_like_person_helper(s)]
     return {eid: str(((by_id.get(eid) or {}).get("attributes") or {}).get("friendly_name") or "") for eid in ids}
+
+
+def url_from_title(title: str) -> str:
+    """The Frigate integration titles its entry with the server's host:port."""
+    title = (title or "").strip().rstrip("/")
+    if not title or " " in title:
+        return ""
+    return title if title.startswith(("http://", "https://")) else f"http://{title}"
+
+
+class FrigateAPI:
+    """Snapshots, clips and retain straight from Frigate's API.
+
+    Not through the Frigate integration's notification proxy: that view fails for
+    requests that reach Home Assistant through the Supervisor, which is the only way
+    an App can call it. The address comes from the settings or, when empty, from the
+    Frigate integration (detected at every connection).
+    """
+
+    PATHS = {"snapshot.jpg": "snapshot.jpg?bbox=0", "clip.mp4": "clip.mp4"}
+
+    def __init__(self, settings: Any) -> None:
+        self.settings = settings  # callable returning the current settings
+        self.detected = ""
+
+    @property
+    def base(self) -> str:
+        return (self.settings().get("frigate_url") or self.detected or "").rstrip("/")
+
+    def open(self, event_id: str, name: str, range_header: str = "", timeout: float = 30) -> Any:
+        """urllib response for a snapshot or clip; the caller reads and closes it."""
+        if not self.base:
+            raise OSError("Frigate address unknown")
+        headers = {"Range": range_header} if range_header else {}
+        req = urllib.request.Request(f"{self.base}/api/events/{event_id}/{self.PATHS[name]}", headers=headers)
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    def read(self, event_id: str, name: str) -> bytes:
+        with self.open(event_id, name, timeout=20) as resp:
+            return resp.read()
+
+    def retain(self, event_id: str) -> None:
+        if not self.base:
+            raise OSError("Frigate address unknown")
+        req = urllib.request.Request(f"{self.base}/api/events/{event_id}/retain", data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()

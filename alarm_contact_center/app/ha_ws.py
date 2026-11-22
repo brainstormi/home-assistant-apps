@@ -20,13 +20,12 @@ from typing import Any, Awaitable, Callable
 import aiohttp
 
 from .engine import Engine
-from .frigate import pick_helpers
+from .frigate import FrigateAPI, pick_helpers, url_from_title
 from .store import Store, bridge_addon
 
 log = logging.getLogger(__name__)
 
 WS_URL = os.environ.get("HA_WS_URL", "http://supervisor/core/websocket")
-API_URL = os.environ.get("HA_API_URL", "http://supervisor/core/api").rstrip("/")
 FRIGATE_INSTANCE = os.environ.get("ACC_FRIGATE_INSTANCE", "frigate")  # the integration's default instance id
 CALL_TIMEOUT_S = 1500  # the call script itself gives up after answer time + 900 s
 
@@ -166,9 +165,10 @@ class HAConnection:
 class HAPort:
     """The Engine's Port on top of a real Home Assistant."""
 
-    def __init__(self, conn: HAConnection, store: Store) -> None:
+    def __init__(self, conn: HAConnection, store: Store, frigate: FrigateAPI | None = None) -> None:
         self.conn = conn
         self.store = store
+        self.frigate = frigate or FrigateAPI(store.settings)
 
     async def call(self, params: dict[str, Any]) -> dict[str, Any]:
         # If Home Assistant is restarting, wait for it instead of failing every
@@ -208,13 +208,16 @@ class HAPort:
         await self.conn.call_service("mqtt", "publish", {"topic": topic, "payload": payload, "retain": retain})
 
     async def frigate_snapshot(self, event_id: str) -> bytes:
-        """The event snapshot, through the Frigate integration's notification proxy."""
-        return await fetch_frigate_media(event_id, "snapshot.jpg")
+        return await asyncio.to_thread(self.frigate.read, event_id, "snapshot.jpg")
 
     async def frigate_retain(self, event_id: str) -> None:
-        """Ask Frigate to keep the event past its retention (best effort)."""
-        await self.conn.command({"type": "frigate/event/retain", "instance_id": FRIGATE_INSTANCE,
-                                 "event_id": event_id, "retain": True}, timeout=15)
+        """Ask Frigate to keep the event past its retention: through the Frigate
+        integration when it offers the command, otherwise straight to Frigate."""
+        try:
+            await self.conn.command({"type": "frigate/event/retain", "instance_id": FRIGATE_INSTANCE,
+                                     "event_id": event_id, "retain": True}, timeout=15)
+        except Exception:  # noqa: BLE001
+            await asyncio.to_thread(self.frigate.retain, event_id)
 
     async def friendly_name(self, entity_id: str) -> str:
         states = await self.conn.command({"type": "get_states"})
@@ -224,14 +227,18 @@ class HAPort:
         return entity_id
 
 
-async def fetch_frigate_media(event_id: str, name: str, timeout: float = 20) -> bytes:
-    token = os.environ.get("SUPERVISOR_TOKEN", "")
-    url = f"{API_URL}/frigate/notifications/{event_id}/{name}"
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-        async with session.get(url, headers={"Authorization": f"Bearer {token}"}) as resp:
-            if resp.status != 200:
-                raise HAError(f"HTTP {resp.status}")
-            return await resp.read()
+async def detect_frigate(conn: HAConnection, frigate: FrigateAPI) -> None:
+    """Take Frigate's address from the Frigate integration's entry."""
+    try:
+        entries = await conn.command({"type": "config_entries/get", "domain": "frigate"}, timeout=15) or []
+    except Exception as err:  # noqa: BLE001
+        log.info("Frigate integration not found: %s", err)
+        return
+    loaded = [e for e in entries if e.get("state") == "loaded"] or entries
+    url = url_from_title(str((loaded[0] if loaded else {}).get("title") or ""))
+    if url and url != frigate.detected:
+        log.info("Frigate found through its integration")
+    frigate.detected = url
 
 
 class EntityWatcher:
@@ -286,6 +293,9 @@ async def wire(conn: HAConnection, engine: Engine, store: Store, trunk: Any = No
     """(Re)subscribe everything after each connection and catch up on the current states."""
     watcher = watcher or EntityWatcher(conn, engine, store)
     watcher.sub = None  # a new connection has no subscriptions yet
+    frigate = getattr(engine.port, "frigate", None)
+    if frigate is not None:
+        await detect_frigate(conn, frigate)
     settings = store.settings()
     alarm_entity = settings["alarm_entity"]
     watched = [settings["trunk_entity"], settings["ami_entity"]] if trunk is not None else []
