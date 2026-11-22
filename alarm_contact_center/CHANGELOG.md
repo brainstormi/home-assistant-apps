@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+Needs Asterisk Realtime Bridge 0.9.2 or later.
+
+- When the alarm is disarmed or someone else takes it, the note to the person on the phone closes the notice (`resolve`): the assistant says it at once and stops asking for confirmation.
+- If the person who presses "Lo atiendo" is the one on the phone, the assistant thanks them instead of telling them about themselves.
+- Voicemail detection (on by default): the assistant recognises voicemail, leaves a short message after the beep (new setting, with the same variables as the notice) and the chain moves on. A voicemail never counts as a confirmation.
+- Clearer timeline: voicemail (and whether the message was left), "contesta pero no responde" when the Bridge hangs up after unanswered prompts, "llamada retirada", "llamada cerrada".
+
 ## 0.2.3
 
 - The Bridge App id is worked out from this App's own id (both come from the same repository, so they share its prefix). The setting is now optional: leave it empty to use the derived id.

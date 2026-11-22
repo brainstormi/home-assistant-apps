@@ -49,6 +49,10 @@ TRIGGERED_STATE = "triggered"
 TEST_PREFIX = "Esto es una prueba de Alarm Contact Center. "
 DRILL_PREFIX = "Esto es un simulacro de alarma. "
 CHAIN_KINDS = ("alarm", "drill")  # incidents that run the full chain
+AFTER_TEXT = {
+    "confirmed": "Confirmó el aviso", "answered": "Contestó sin confirmar", "resolved": "Se le informó y colgó",
+    "cancelled": "Llamada retirada", "voicemail": "Buzón de voz", "no_answer": "No contestó",
+}
 PROFILE_TEXT = {"Management": "modo gestión (con PIN)", "QueryOnly": "solo consulta"}
 
 
@@ -60,7 +64,8 @@ class Port(Protocol):
 
     async def notify(self, service: str, title: str, message: str, data: dict[str, Any]) -> None: ...
 
-    async def bridge_note(self, call_id: str, text: str) -> None: ...
+    async def bridge_note(self, call_id: str, text: str, resolve: bool = False) -> None:
+        """Tell the person on the phone. resolve=True also closes the notice (Bridge 0.9+)."""
 
     async def bridge_hangup(self, call_id: str = "") -> None: ...
 
@@ -437,6 +442,12 @@ class Engine:
                 "confirmacion": contact["confirm"],
                 "texto_confirmacion": settings["confirm_text"],
             }
+            if settings["detect_voicemail"]:
+                params["detectar_buzon"] = True
+                vm = render_message(settings["voicemail_message"], nombre=contact["name"], sensor=inc.sensor,
+                                    zona="", hora=hhmm(inc.started), atendido="")
+                if vm:
+                    params["mensaje_buzon"] = (TEST_PREFIX if test else DRILL_PREFIX if inc.kind == "drill" else "") + vm
             inc.current_contact, inc.calling_number, inc.current_call_id = contact["name"], contact["phone"], ""
             inc.requested_profile = params["perfil"]
             inc.call_answered = False
@@ -457,8 +468,7 @@ class Engine:
                 # The incident was already settled (disarmed, acknowledged by someone
                 # else, cancelled) while this call was going on: record how the call
                 # ended, but it changes nothing.
-                inc.add("after", f"Termina la llamada a {contact['name']}",
-                        {"confirmed": "Confirmó el aviso", "answered": "Contestó sin confirmar"}.get(result, result))
+                inc.add("after", f"Termina la llamada a {contact['name']}", AFTER_TEXT.get(result, result))
                 return "stopped"
 
             if result == "confirmed":
@@ -482,17 +492,30 @@ class Engine:
                 else:
                     inc.status = "trunk_down"
                 return "trunk_down"
+            name = contact["name"]
+            silent = detail.get("ended_by") == "silence"
             text = {
-                "BUSY": f"{contact['name']} rechaza la llamada o comunica",
-                "NOANSWER": f"{contact['name']} no contesta",
+                "BUSY": f"{name} rechaza la llamada o comunica",
+                "NOANSWER": f"{name} no contesta",
             }.get(dialstatus) or {
-                "answered": f"{contact['name']} contesta pero no confirma",
-                "no_answer": f"{contact['name']} no contesta",
-                "cancelled": f"Llamada a {contact['name']} cancelada",
-                "timeout": f"Sin respuesta del Bridge en la llamada a {contact['name']}",
-            }.get(result, f"Falla la llamada a {contact['name']}")
-            inc.add(result, text, f"Asterisk: {dialstatus}" if dialstatus else "")
-            if result != "cancelled" and contact["name"] not in inc.not_answered:
+                "answered": f"{name} contesta pero no responde" if silent else f"{name} contesta pero no confirma",
+                "voicemail": f"Salta el buzón de voz de {name}",
+                "no_answer": f"{name} no contesta",
+                "cancelled": f"Llamada a {name} retirada",
+                "resolved": f"Llamada a {name} cerrada",
+                "timeout": f"Sin respuesta del Bridge en la llamada a {name}",
+            }.get(result, f"Falla la llamada a {name}")
+            extra = []
+            if dialstatus:
+                extra.append(f"Asterisk: {dialstatus}")
+            if silent:
+                extra.append("Nadie habló: el asistente colgó tras volver a preguntar")
+            if result == "voicemail":
+                extra.append("Mensaje dejado en el buzón" if detail.get("voicemail_message_left") else "Sin mensaje en el buzón")
+                if detail.get("detected_by") == "amd":
+                    extra.append("Detectado por Asterisk")
+            inc.add(result, text, " · ".join(extra))
+            if result not in ("cancelled", "resolved") and contact["name"] not in inc.not_answered:
                 inc.not_answered.append(contact["name"])
             if attempt < contact["attempts"] and await self._wait(inc, contact["retry_wait"]):
                 return "stopped"
@@ -506,7 +529,9 @@ class Engine:
         if not from_call:
             inc.add("acknowledged", f"{who} atiende la alarma", f"Desde {via}")
         if not from_call:
-            await self._tell_current_call(inc, f"Te informo de que {who} ya está atendiendo la alarma.")
+            text = ("Gracias, ya consta que estás atendiendo la alarma." if who == inc.current_contact
+                    else f"Te informo de que {who} ya está atendiendo la alarma.")
+            await self._tell_current_call(inc, text)
         inc.stop_reason = "acknowledged"
         inc.stop.set()
         await self._notify_household(inc, "Alarma atendida", f"{who} está atendiendo la alarma ({inc.sensor}, {hhmm(inc.started)}).", ack_button=False)
@@ -533,7 +558,8 @@ class Engine:
             return
         with contextlib.suppress(Exception):
             if inc.call_answered:
-                await self.port.bridge_note(inc.current_call_id, text)
+                # resolve: the notice no longer needs confirming (Bridge 0.9+).
+                await self.port.bridge_note(inc.current_call_id, text, resolve=True)
             else:
                 await self.port.bridge_hangup(inc.current_call_id)
 

@@ -118,6 +118,13 @@ class SettingsTests(unittest.TestCase):
         self.assertIn("call_delay", ctx.exception.errors)
         self.assertIn("external_notify_delay", ctx.exception.errors)
 
+    def test_voicemail_settings(self):
+        s = clean_settings({})
+        self.assertTrue(s["detect_voicemail"])
+        self.assertIn("{nombre}", s["voicemail_message"])
+        with self.assertRaises(ValidationError):
+            clean_settings({"voicemail_message": "x" * 301})
+
     def test_entities_deduplicated(self):
         s = clean_settings({"incident_entities": ["binary_sensor.a", "binary_sensor.a", " "]})
         self.assertEqual(s["incident_entities"], ["binary_sensor.a"])

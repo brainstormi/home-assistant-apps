@@ -17,6 +17,7 @@ class FakePort:
         self.answers = answers or {}
         self.calls = []
         self.notes = []
+        self.resolves = []
         self.hangups = []
         self.notifications = []
         self.stopped_queue = 0
@@ -36,8 +37,9 @@ class FakePort:
     async def notify(self, service, title, message, data):
         self.notifications.append((service, title, message, data))
 
-    async def bridge_note(self, call_id, text):
+    async def bridge_note(self, call_id, text, resolve=False):
         self.notes.append((call_id, text))
+        self.resolves.append(resolve)
 
     async def bridge_hangup(self, call_id=""):
         self.hangups.append(call_id)
@@ -152,6 +154,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inc.status, "acknowledged")
         self.assertEqual(inc.acknowledged_by, "Marta")
         self.assertEqual(port.notes, [("abc", "Te informo de que Marta ya está atendiendo la alarma.")])
+        self.assertEqual(port.resolves, [True])  # the notice is closed, no more confirmation
         self.assertEqual(len(port.calls), 1)  # no more calls after the button
         # The button never disarms anything: the engine has no way to do it.
 
@@ -308,6 +311,50 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         texts = [e["text"] for e in engine.current.events]
         self.assertIn("Luis rechaza la llamada o comunica", texts)
         self.assertTrue(any("solo consulta" in t for t in texts))
+
+    async def test_own_ack_wording(self):
+        # The person on the phone presses the app button themselves.
+        port = FakePort()
+        port.gate = asyncio.Event()
+        engine = self.engine(port)
+        await engine.on_alarm_state("triggered", TRIGGER)
+        await asyncio.wait_for(port.in_call.wait(), 2)
+        await engine.on_bridge_event({"stage": "started", "direction": "outbound", "call_id": "o1", "number": "600000001"})
+        await engine.on_bridge_event({"stage": "answered", "direction": "outbound", "call_id": "o1"})
+        await engine.on_notification_action(f"{ACK_PREFIX}:{engine.current.id}:{self.luis['id']}")
+        port.gate.set()
+        await asyncio.wait_for(engine.current.task, 2)
+        self.assertEqual(port.notes, [("o1", "Gracias, ya consta que estás atendiendo la alarma.")])
+
+    async def test_voicemail_and_silence(self):
+        self.store.save_settings({"rounds": 1})
+        port = FakePort({
+            "600000001": [{"resultado": "voicemail", "detalle": {"detected_by": "assistant", "voicemail_message_left": True}},
+                          {"resultado": "answered", "detalle": {"ended_by": "silence"}}],
+            "600000002": [{"resultado": "confirmed"}],
+        })
+        inc = await self.run_alarm(self.engine(port))
+        self.assertEqual(inc.acknowledged_by, "Marta")  # voicemail and silence never confirm
+        texts = [(e["text"], e["detail"]) for e in inc.events]
+        self.assertIn(("Salta el buzón de voz de Luis", "Mensaje dejado en el buzón"), texts)
+        self.assertTrue(any(t == "Luis contesta pero no responde" for t, _ in texts))
+        first = port.calls[0]
+        self.assertTrue(first["detectar_buzon"])
+        self.assertIn("Luis", first["mensaje_buzon"])
+        self.assertIn("Puerta del garaje", first["mensaje_buzon"])
+
+    async def test_voicemail_detection_off(self):
+        self.store.save_settings({"detect_voicemail": False})
+        port = FakePort({"600000001": [{"resultado": "confirmed"}]})
+        await self.run_alarm(self.engine(port))
+        self.assertNotIn("detectar_buzon", port.calls[0])
+
+    async def test_drill_voicemail_message_marked(self):
+        port = FakePort({"600000003": [{"resultado": "confirmed"}]})
+        engine = self.engine(port)
+        await engine.start_drill([self.pablo["id"]], "")
+        await engine.current.task
+        self.assertTrue(port.calls[0]["mensaje_buzon"].startswith("Esto es un simulacro"))
 
     def test_render_message(self):
         text = render_message("Hola {nombre}. {sensor} a las {hora}. {atendido}", nombre="Ana", sensor="Garaje", hora="23:41", atendido="")

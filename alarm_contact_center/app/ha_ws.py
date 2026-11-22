@@ -178,8 +178,11 @@ class HAPort:
             raise HAError("Bridge App id unknown: set it in Ajustes")
         await self.conn.call_service("hassio", "addon_stdin", {"addon": addon, "input": command})
 
-    async def bridge_note(self, call_id: str, text: str) -> None:
-        await self._bridge({"action": "note", "call_id": call_id, "text": text})
+    async def bridge_note(self, call_id: str, text: str, resolve: bool = False) -> None:
+        command: dict[str, Any] = {"action": "note", "call_id": call_id, "text": text}
+        if resolve:
+            command["resolve"] = True
+        await self._bridge(command)
 
     async def bridge_hangup(self, call_id: str = "") -> None:
         await self._bridge({"action": "hangup", "call_id": call_id})

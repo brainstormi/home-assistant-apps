@@ -11,6 +11,8 @@ Alerts a list of contacts when the Alarmo alarm goes off: phone calls through As
 3. Alarm calls take priority: other runs of the call script are stopped and any call on the line is hung up.
 4. Active contacts with a phone are called in order through the call script (`script.llamada_saliente`), with each contact's retries. The chain is circular: after the last contact it goes back to the first, for the configured rounds, or with no limit until someone confirms (capped by a maximum time).
 5. When someone confirms, on the phone or with the app button, the chain stops: whoever is on the phone is told, a call still ringing is withdrawn, and everyone's notification is updated. **Nothing here ever disarms the alarm.**
+
+A voicemail (recognised by the assistant, see **Ajustes → Buzón de voz**) or a person who never answers the prompts does not count as a confirmation: the chain moves on to the next contact.
 6. If the trunk is down (`CHANUNAVAIL` or `CONGESTION`), the App stops calling and says so in the notifications.
 
 External contacts always call in query-only mode. Contacts allowed to manage call in Management mode with their Home Assistant person, so the Bridge asks for their PIN.
@@ -44,7 +46,7 @@ The configuration is stored in `/data/contact_center.json` and the last 50 incid
 
 ## Requirements
 
-- The Asterisk Realtime Bridge App (0.8.0 or later) and its call script (`script.llamada_saliente`). When the Bridge is installed from the same repository as this App, its id is found automatically; otherwise set it in **Ajustes → Integración con Home Assistant**, where the alarm entity and the call script can be changed too.
+- The Asterisk Realtime Bridge App (0.9.2 or later) and its call script (`script.llamada_saliente`). When the Bridge is installed from the same repository as this App, its id is found automatically; otherwise set it in **Ajustes → Integración con Home Assistant**, where the alarm entity and the call script can be changed too.
 
 ## Options
 
