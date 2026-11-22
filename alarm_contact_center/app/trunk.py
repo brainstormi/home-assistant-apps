@@ -48,7 +48,9 @@ KEEP_DROPS_S = 7 * 24 * 3600
 OK_RESULTS = ("ok", "out_only")
 RESULT_TEXT = {
     "ok": "La llamada sale y vuelve a entrar",
-    "out_only": "La llamada sale, pero no vuelve a entrar",
+    # Many operators refuse a call to the line's own number (BUSY): the call did go
+    # out, which is what matters for the alarm. Not an error.
+    "out_only": "La llamada sale (el operador no la devuelve a la propia línea)",
     "failed": "La llamada no sale",
     "timeout": "El Bridge no responde a la prueba",
 }

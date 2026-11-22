@@ -106,7 +106,7 @@ function channels(c) {
 }
 
 // --------------------------------------------------------------------- home
-const TRUNK_RESULT = { ok: ["Funciona", "ok"], out_only: ["Sale, no vuelve", "warn"], failed: ["No sale", "bad"], timeout: ["Sin respuesta", "warn"] };
+const TRUNK_RESULT = { ok: ["Funciona", "ok"], out_only: ["Funciona", "ok"], failed: ["No sale", "bad"], timeout: ["Sin respuesta", "warn"] };
 
 function trunkTile(s, regValue, regClass) {
   const t = s.trunk;
