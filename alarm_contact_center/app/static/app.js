@@ -578,7 +578,7 @@ function showSettings(draft = null, errors = {}) {
   const photos = el("input", { id: "send_photos_external", type: "checkbox", checked: st.send_photos_external });
   const helpers = el("textarea", { id: "person_entities", rows: "3", placeholder: "input_text.persona_huerto" }, (st.person_entities || []).join("\n"));
   const frigateUrl = el("input", { id: "frigate_url", type: "url", placeholder: "Automática", value: st.frigate_url || "" });
-  const entities = el("textarea", { id: "incident_entities", rows: "4", placeholder: "binary_sensor.movimiento_salon_occupancy" }, (st.incident_entities || []).join("\n"));
+  const entities = el("textarea", { id: "incident_entities", rows: "8", placeholder: "binary_sensor.movimiento_salon_occupancy" }, (st.incident_entities || []).join("\n"));
   const pinEntity = el("input", { id: "bridge_pin_entity", type: "text", value: st.bridge_pin_entity, placeholder: "sensor.asterisk_realtime_bridge_pin (por defecto)" });
 
   const preview = el("div", { class: "preview" });
@@ -683,7 +683,7 @@ function showSettings(draft = null, errors = {}) {
 
     el("section", { class: "card", "aria-labelledby": "inc-h" },
       el("h2", { id: "inc-h", style: "font-size:17px" }, "Registro del incidente"),
-      field("incident_entities", "Sensores que se añaden a la cronología", entities, "Un entity_id por línea: movimiento, puertas, ventanas…", errors.incident_entities)),
+      field("incident_entities", "Sensores que se añaden a la cronología", entities, "Un entity_id por línea: puertas, ventanas, movimiento, cerraduras, personas…", errors.incident_entities)),
 
     el("section", { class: "card", "aria-labelledby": "bridge-h" },
       el("h2", { id: "bridge-h", style: "font-size:17px" }, "Asterisk Realtime Bridge"),
