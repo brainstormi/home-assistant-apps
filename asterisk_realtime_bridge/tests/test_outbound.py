@@ -23,9 +23,11 @@ CALL_ID = "0b6c3a52-7f0e-4d3c-9a51-2f5d8e9a1c07"
 class FakeStatus:
     def __init__(self):
         self.searches = []
+        self.extras = []
 
-    async def snapshot(self, search=""):
+    async def snapshot(self, search="", extra=()):
         self.searches.append(search)
+        self.extras.append(extra)
         return {"now": "2026-11-21 17:00", "entities": [
             {"name": "Puerta garaje", "entity_id": "binary_sensor.garaje", "state": "off",
              "device_class": "garage_door"}]}

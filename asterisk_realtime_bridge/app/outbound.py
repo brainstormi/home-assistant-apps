@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections import deque
@@ -46,6 +47,7 @@ MAX_TIMEOUT_S = 600
 MAX_MESSAGE_CHARS = 1000
 MAX_TEXT_CHARS = 300
 MAX_NAME_CHARS = 80
+_ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 # "realtime": OpenAI (with the local fallback if it fails); "local": straight to
 # the local conversation (Home Assistant STT, Assist and TTS), no OpenAI at all.
 ENGINES = ("realtime", "local")
@@ -72,6 +74,9 @@ class OutboundCall:
     voicemail_message: str = ""
     # The assistant may end the call as a voicemail when it hears one.
     detect_voicemail: bool = False
+    # Entity whose state and assistant_context the assistant may read in this
+    # call (read only), even outside the read-only scope: e.g. the incident.
+    context_entity: str = ""
     created: float = field(default_factory=time.monotonic)
 
     @property
@@ -124,7 +129,19 @@ def parse_command(data: Any) -> OutboundCall:
         assistant_name=str(data.get("assistant_name") or "").strip()[:MAX_NAME_CHARS],
         voicemail_message=str(data.get("voicemail_message") or "").strip()[:MAX_MESSAGE_CHARS],
         detect_voicemail=str(data.get("detect_voicemail")).strip().lower() in ("1", "true", "yes", "on"),
+        context_entity=_entity_id(data.get("context_entity")),
     )
+
+
+def _entity_id(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if not _ENTITY_ID_RE.match(text):
+        # Never stop an alarm call for this: the call goes on without it.
+        log.warning("Ignoring context_entity %.80r: not an entity id", text)
+        return ""
+    return text
 
 
 ExpiredCallback = Callable[[OutboundCall], Awaitable[None]]

@@ -693,7 +693,8 @@ class CallSession:
             return {"ok": False, "error": "The state of the home is not available."}
         log.info("[%s] status%s", self.call_id, f": {search}" if search else "")
         try:
-            return {"ok": True, **await self.status.snapshot(search)}
+            extra = (self.outbound.context_entity,) if self.outbound and self.outbound.context_entity else ()
+            return {"ok": True, **await self.status.snapshot(search, extra=extra)}
         except Exception as err:  # noqa: BLE001 - report it to the model
             log.warning("[%s] failed to read the home state: %r", self.call_id, err)
             return {"ok": False, "error": "Could not read the state of the home."}

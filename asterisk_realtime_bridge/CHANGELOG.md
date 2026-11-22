@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0
+- `home_status` adds the `assistant_context` attribute of an entity (text written for the assistant, up to 2000 characters) as `context`. Any entity can provide it.
+- Outbound calls accept `context_entity`: that entity is readable with `home_status` during the call (read only, even outside the read-only scope) and the assistant is told to read it when asked what happened. See DOCS, "Incident context".
+
 ## 0.10.0
 - **Trunk test:** new command `trunk_test` (`test_id`, `number` = your own line, `timeout`). The bridge calls your own line through the trunk (new `bridge-trunk-test` context); if the call comes back in, the incoming context reports it and hangs up without answering. Event `asterisk_realtime_bridge_trunk` with `result` `ok`, `out_only` or `failed`, and the `dialstatus`. One test at a time. See DOCS, "Trunk test".
 

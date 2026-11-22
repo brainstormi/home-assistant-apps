@@ -24,6 +24,9 @@ log = logging.getLogger(__name__)
 
 REGISTRY_TTL_S = 60.0
 MAX_ENTITIES = 200
+# Attribute with text written for the assistant (the timeline of an incident...).
+CONTEXT_ATTRIBUTE = "assistant_context"
+MAX_CONTEXT_CHARS = 2000
 
 
 def parse_list(text: str) -> list[str]:
@@ -112,20 +115,32 @@ def _ago(seconds: float) -> str:
     return f"{hours // 24} days ago"
 
 
-def describe(states: list[dict[str, Any]], now: datetime, search: str = "") -> dict[str, Any]:
-    """The tool result: current time and one compact line per entity."""
+def describe(
+    states: list[dict[str, Any]], now: datetime, search: str = "", always: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """The tool result: current time and one compact line per entity.
+
+    An entity with an ``assistant_context`` attribute (text written for the
+    assistant, e.g. the timeline of an alarm incident) adds it as ``context``.
+    Entities in ``always`` are listed whatever the search.
+    """
     key = _norm(search)
     items: list[dict[str, Any]] = []
     for st in states:
         attrs = st.get("attributes") or {}
         name = attrs.get("friendly_name") or st.get("entity_id", "")
-        if key and key not in _norm(name) and key not in _norm(st.get("entity_id", "")):
+        if (key and st.get("entity_id") not in always
+                and key not in _norm(name) and key not in _norm(st.get("entity_id", ""))):
             continue
         item: dict[str, Any] = {"name": name, "entity_id": st.get("entity_id"), "state": st.get("state")}
         if attrs.get("device_class"):
             item["device_class"] = attrs["device_class"]
         if attrs.get("unit_of_measurement"):
             item["unit"] = attrs["unit_of_measurement"]
+        context = attrs.get(CONTEXT_ATTRIBUTE)
+        if isinstance(context, str) and context.strip():
+            text = context.strip()
+            item["context"] = text if len(text) <= MAX_CONTEXT_CHARS else text[:MAX_CONTEXT_CHARS] + "…"
         changed = _parse_time(st.get("last_changed", ""))
         if changed is not None and now.tzinfo is not None:
             local = changed.astimezone(now.tzinfo)
@@ -192,14 +207,18 @@ class HomeStatus:
             return True
         return set(entity_ids) <= await self.scope_ids()
 
-    async def snapshot(self, search: str = "") -> dict[str, Any]:
+    async def snapshot(self, search: str = "", extra: tuple[str, ...] = ()) -> dict[str, Any]:
+        """The read-only list. ``extra``: entities added for this call only (read
+        only, listed first and whatever the search), e.g. the incident sensor."""
         reg = await self._registries()
         states = await self._ha.get("states")
         by_id = {s["entity_id"]: s for s in states or [] if "entity_id" in s}
         ids = select_entities(self._include, self._exclude, reg, set(by_id))
+        added = tuple(i for i in extra if i in by_id)
+        ids = list(added) + [i for i in ids if i not in added]
         now_text = (await self._ha.render("{{ now().isoformat() }}")).strip()
         now = _parse_time(now_text) or datetime.now().astimezone()
-        return describe([by_id[i] for i in ids], now, search)
+        return describe([by_id[i] for i in ids], now, search, always=added)
 
 
 __all__ = ["HomeStatus", "Registries", "describe", "parse_list", "select_entities"]
