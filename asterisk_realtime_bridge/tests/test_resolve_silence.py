@@ -42,8 +42,9 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.02)
 
     async def asyncTearDown(self):
-        self.task.cancel()
-        await asyncio.gather(self.task, return_exceptions=True)
+        if getattr(self, "task", None):
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
 
     def notes(self):
         return [e["item"]["content"][0]["text"] for e in self.ws.of_type("conversation.item.create")
@@ -227,3 +228,43 @@ class DialplanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AssistantVoicemailTests(RealtimeTests):
+    def tools(self):
+        return [t["name"] for t in self.ws.sent[0]["session"]["tools"]]
+
+    async def test_tool_only_when_asked(self):
+        await self.start()
+        self.assertNotIn("report_voicemail", self.tools())
+        self.assertNotIn("report_voicemail", self.ws.sent[0]["session"]["instructions"])
+
+    async def test_voicemail_with_message(self):
+        await self.start(detect_voicemail=True, voicemail_message="Call home.")
+        self.assertIn("report_voicemail", self.tools())
+        self.assertIn("Live Voicemail", self.ws.sent[0]["session"]["instructions"])
+        self.ws.push(call("report_voicemail", {}, "v1"))
+        await asyncio.sleep(0.05)
+        out = self.ws.tool_outputs()[-1]
+        self.assertIn('"Call home."', out["instruction"])
+        self.assertTrue(self.session.voicemail and self.session.voicemail_message_left)
+        self.assertTrue(self.session._hangup_pending)
+
+    async def test_voicemail_result(self):
+        await self.start(detect_voicemail=True)
+        self.ws.push(call("report_voicemail", {}, "v1"))
+        await asyncio.sleep(0.05)
+        self.assertIn("call hang_up now", self.ws.tool_outputs()[-1]["instruction"])
+        bridge = test_main.main.Bridge(Config(openai_api_key="k", pin="1234"), http=None)
+        data = bridge._ended(CALL_ID, self.session.outbound, self.session, 5)
+        await bridge.close()
+        self.assertEqual((data["result"], data["detected_by"], data["voicemail_message_left"]),
+                         ("voicemail", "assistant", False))
+
+    def test_command_flag(self):
+        cmd = parse_command({"action": "outbound", "call_id": CALL_ID, "message": "x",
+                             "profile": "QueryOnly", "detect_voicemail": True})
+        self.assertTrue(cmd.detect_voicemail)
+        cmd = parse_command({"action": "outbound", "call_id": CALL_ID, "message": "x",
+                             "profile": "QueryOnly", "detect_voicemail": "false"})
+        self.assertFalse(cmd.detect_voicemail)

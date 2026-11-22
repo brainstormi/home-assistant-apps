@@ -84,7 +84,7 @@ fields:
       text: {}
   detect_voicemail:
     name: Detect answering machines
-    description: Uses the bridge-notice-amd context (adds 2-4 s; may mistake a long greeting for a machine).
+    description: Asterisk's AMD (bridge-notice-amd context, adds 2-4 s) and the assistant both watch for voicemail; the result is then voicemail.
     default: false
     selector:
       boolean: {}
@@ -138,6 +138,7 @@ sequence:
               assistant_name: "{{ assistant_name | default('') }}"
               engine: "{{ engine | default('realtime') }}"
               voicemail_message: "{{ voicemail_message | default('') }}"
+              detect_voicemail: "{{ detect_voicemail | default(false) | bool }}"
         - alias: Ask Asterisk to dial
           action: hassio.addon_stdin
           data:

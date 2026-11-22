@@ -247,7 +247,12 @@ With `resolve: true` the note **closes the notice** (the alarm was disarmed, som
 
 **Silence.** If nobody speaks or presses a key for `silence_seconds` (default 8) after the assistant has finished, it asks again; after `silence_reprompts` (default 2) unanswered prompts it says goodbye and hangs up, and the `ended` event carries `ended_by: silence`. After a resolving note, silence ends the call at once. `silence_seconds: 0` turns this off.
 
-**Answering machines (optional).** To detect them, dial with the `bridge-notice-amd` context instead of `bridge-notice` (it runs Asterisk's `AMD()` when the phone is answered; it adds 2-4 s and sometimes mistakes a person with a long greeting for a machine, so it is off unless you choose that context). When `AMD()` reports `MACHINE`, the notice is not read: the call ends with `result: voicemail`, `amdstatus: MACHINE` and `amdcause` (`INITIALSILENCE`, `LONGGREETING`, `MAXWORDS`...). If the outbound command has `voicemail_message`, that short text is left on the machine with the fallback voice (`fallback_tts`) first (`voicemail_message_left: true`). When `AMD()` is not sure, the call goes on as usual and the silence rule above applies.
+**Answering machines and voicemail (optional).** Two detectors, used together:
+
+* **Asterisk's `AMD()`**: dial with the `bridge-notice-amd` context instead of `bridge-notice`. It listens to the first seconds before the assistant speaks (it adds 2-4 s and sometimes mistakes a person with a long greeting for a machine). On `MACHINE` the notice is not read: the call ends with `result: voicemail`, `detected_by: amd`, `amdstatus: MACHINE` and `amdcause` (`INITIALSILENCE`, `LONGGREETING`, `MAXWORDS`...). If the outbound command has `voicemail_message`, that short text is left first with the fallback voice (`fallback_tts`). When `AMD()` is not sure, the call goes on.
+* **The assistant**: with `detect_voicemail: true` in the outbound command, the assistant gets a `report_voicemail` tool and is told to use it when it hears a voicemail (a recorded greeting, "leave a message", a beep, call screening such as iPhone's Live Voicemail). It then leaves `voicemail_message` (in its own voice, if there is one) and hangs up; the call ends with `result: voicemail` and `detected_by: assistant`. This catches voicemail that `AMD()` misses (some mobile voicemail services send no audio while silent, so `AMD()` cannot decide). OpenAI engine only.
+
+`voicemail_message_left` tells whether the message was left.
 
 The bridge keeps no contacts and no call policy: who to call, with which profile, what counts as a confirmation and what to do with the result are decided by the caller (your script, automation or alarm) in every command.
 
@@ -293,8 +298,8 @@ Event `asterisk_realtime_bridge_call`:
 | `call_id` | the UUID of the command |
 | `direction` | `outbound` or `inbound` |
 | `stage` | `started` (command accepted / incoming call connected), `answered` (outbound), `note`, `ended` |
-| `result` (when `ended`) | `no_answer` (not answered within `timeout`, or Asterisk reported `NOANSWER`), `answered`, `confirmed` (the person confirmed the notice), `resolved` (a note with `resolve: true` closed the notice), `voicemail` (an answering machine, with `bridge-notice-amd`), `cancelled` (withdrawn by `hangup` before it was answered), `failed` (invalid command, too many calls, a dial failure such as `BUSY`, or the assistant could not start) |
-| `amdstatus`, `amdcause`, `voicemail_message_left` | with `result: voicemail` |
+| `result` (when `ended`) | `no_answer` (not answered within `timeout`, or Asterisk reported `NOANSWER`), `answered`, `confirmed` (the person confirmed the notice), `resolved` (a note with `resolve: true` closed the notice), `voicemail` (an answering machine or voicemail, see above), `cancelled` (withdrawn by `hangup` before it was answered), `failed` (invalid command, too many calls, a dial failure such as `BUSY`, or the assistant could not start) |
+| `detected_by`, `amdstatus`, `amdcause`, `voicemail_message_left` | with `result: voicemail` (`detected_by`: `amd` or `assistant`; `amdstatus`/`amdcause` only with `amd`) |
 | `dialstatus` | when Asterisk reports why the call was not answered: `NOANSWER`, `BUSY`, `CONGESTION`, `CHANUNAVAIL`... (needs the dialplan below) |
 | `profile`, `person`, `number`, `engine` | as sent in the command (`InboundCall` for incoming calls, with the caller's `number` and matched `person`) |
 | `effective_profile` | outbound: the profile actually applied (`QueryOnly` when `Management` had no PIN to use) |
@@ -337,7 +342,11 @@ exten => _[0-9a-f].,1,NoOp(Notice ${EXTEN} answered)
 ; Optional: the same, detecting answering machines first (dial "extension <call_id>@bridge-notice-amd").
 [bridge-notice-amd]
 exten => _[0-9a-f].,1,Answer()
+ ; Mobile networks may send no audio while the other end is silent: the jitter
+ ; buffer fills the gaps so that AMD() keeps hearing (silence) and can decide.
+ same => n,Set(JITTERBUFFER(adaptive)=default)
  same => n,AMD()
+ same => n,Set(JITTERBUFFER(disabled)=)
  same => n,GotoIf($["${AMDSTATUS}" = "MACHINE"]?machine)
  same => n,AudioSocket(${EXTEN},127.0.0.1:9092)
  same => n,Hangup()

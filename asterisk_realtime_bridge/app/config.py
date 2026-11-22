@@ -148,6 +148,16 @@ def outbound_rules(
     return "\n".join(rules)
 
 
+# Outbound calls that ask the assistant to recognise voicemail.
+VOICEMAIL_RULES = (
+    "- If the call is answered by a voicemail or an answering machine (a recorded "
+    "greeting, an invitation to leave a message, a beep, or an automatic call "
+    "screening that asks who is calling, such as Live Voicemail), do not deliver "
+    "the notice as if to a person: call the report_voicemail tool at once and "
+    "follow what it returns. A real person who answers is never a voicemail."
+)
+
+
 # How to read the home_status tool (outbound calls).
 STATUS_READING_RULES = (
     "- home_status returns the current state of the entities you may talk about. "
@@ -330,6 +340,8 @@ class Config:
                 confirm_key=call.confirm_key,
                 confirm_text=call.confirm_text,
             )
+            if getattr(call, "detect_voicemail", False):
+                rules += "\n" + VOICEMAIL_RULES
             text += "\nThis call (these rules take precedence):\n" + rules + "\n"
             # The notice also lives here, not only in the greeting: if the person
             # talks over the greeting, the model must still know what to say.

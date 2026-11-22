@@ -170,6 +170,18 @@ def build_tools(
             "parameters": {"type": "object", "properties": {}},
         }
     )
+    if call is not None and call.detect_voicemail:
+        tools.append(
+            {
+                "type": "function",
+                "name": "report_voicemail",
+                "description": (
+                    "The call was answered by a voicemail or an answering machine, "
+                    "not by a person. Call it at once; then do exactly what it returns."
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            }
+        )
     if call is not None and call.confirm != "dtmf":
         tools.append(
             {
@@ -335,6 +347,8 @@ class CallSession:
         self.end_reason: str | None = None
         self.resolved = False  # Home Assistant closed the notice with a note (resolve)
         self.silence_ended = False  # hung up because nobody answered
+        self.voicemail = False  # the assistant recognised a voicemail
+        self.voicemail_message_left = False
         self.openai_error = ""  # last error code sent by OpenAI
 
     # ------------------------------------------------------------------ run
@@ -643,6 +657,8 @@ class CallSession:
         if name == "hang_up":
             self._hangup_pending = True
             return {"ok": True}
+        if name == "report_voicemail" and self.outbound is not None and self.outbound.detect_voicemail:
+            return self._on_voicemail()
         if name == "confirm_notice" and self.resolved:
             return {"ok": True, "message": "No confirmation is needed: the notice is resolved."}
         if name == "confirm_notice" and self.outbound is not None and self.outbound.confirm != "dtmf":
@@ -849,6 +865,20 @@ class CallSession:
         if self._response_active:
             self._note_pending = True  # said as soon as the cancelled response ends
         return True
+
+    def _on_voicemail(self) -> dict[str, Any]:
+        log.info("[%s] the assistant recognised a voicemail", self.call_id)
+        self.voicemail = True
+        self._hangup_pending = True
+        message = self.outbound.voicemail_message if self.outbound else ""
+        if message:
+            self.voicemail_message_left = True
+            return {
+                "ok": True,
+                "instruction": "Say exactly this message, once, and nothing else: "
+                f"{json.dumps(message, ensure_ascii=False)}. Then call hang_up.",
+            }
+        return {"ok": True, "instruction": "Say nothing more and call hang_up now."}
 
     # ------------------------------------------------------------ silence
     def _touch(self) -> None:

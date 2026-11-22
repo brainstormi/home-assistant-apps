@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1
+- **The assistant recognises voicemail:** with `detect_voicemail: true` in the outbound command, it gets a `report_voicemail` tool for recorded greetings, beeps and call screening such as iPhone's Live Voicemail. It leaves `voicemail_message` (if any) and hangs up; the call ends with `result: voicemail` and `detected_by: assistant` (`amd` when Asterisk's `AMD()` detected it).
+- `bridge-notice-amd` dialplan: a jitter buffer around `AMD()` fills the gaps when the mobile network sends no audio during silence (before, `AMD()` heard nothing and could not decide).
+- The example script passes `detect_voicemail` together with the `bridge-notice-amd` context.
+
 ## 0.9.0
 - **Withdrawn calls stop ringing.** `hangup` on an outbound call that is still ringing now also hangs it up in Asterisk (through the Asterisk app's stdin and a new `bridge-kill` context), so the phone stops in a second or two. New option `asterisk_app`. A failure is logged and the call stays `cancelled`.
 - **Notes that close the notice:** `note` with `resolve: true` interrupts the assistant, says the note, stops asking for confirmation, offers to answer a question and then says goodbye. The call ends with `result: resolved`. Without `resolve`, notes work as before.
