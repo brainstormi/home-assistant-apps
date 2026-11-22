@@ -620,6 +620,7 @@ function showSettings(draft = null, errors = {}) {
   const maxOpen = num("max_open_minutes", st.max_open_minutes, 15, 720);
   const retention = num("media_retention_days", st.media_retention_days, 7, 365);
   const photos = el("input", { id: "send_photos_external", type: "checkbox", checked: st.send_photos_external });
+  const videos = el("input", { id: "send_videos_telegram", type: "checkbox", checked: st.send_videos_telegram });
   const helpers = el("textarea", { id: "person_entities", rows: "3", placeholder: "input_text.persona_huerto" }, (st.person_entities || []).join("\n"));
   const frigateUrl = el("input", { id: "frigate_url", type: "url", placeholder: "Automática", value: st.frigate_url || "" });
   const entities = el("textarea", { id: "incident_entities", rows: "8", placeholder: "binary_sensor.movimiento_salon_occupancy" }, (st.incident_entities || []).join("\n"));
@@ -669,7 +670,7 @@ function showSettings(draft = null, errors = {}) {
       trunk_entity: trunkEntity.value, ami_entity: amiEntity.value,
       flap_alert_count: Number(flapCount.value), flap_window_min: Number(flapWindow.value),
       frigate_pre_minutes: Number(pre.value), post_minutes: Number(post.value), max_open_minutes: Number(maxOpen.value), media_retention_days: Number(retention.value),
-      send_photos_external: photos.checked,
+      send_photos_external: photos.checked, send_videos_telegram: videos.checked,
       incident_entities: entities.value.split(/[\s,]+/).filter(Boolean),
       person_entities: helpers.value.split(/[\s,]+/).filter(Boolean),
       frigate_url: frigateUrl.value.trim(),
@@ -740,7 +741,8 @@ function showSettings(draft = null, errors = {}) {
         field("frigate_pre_minutes", "Incluir desde antes del disparo (min)", pre, null, errors.frigate_pre_minutes),
         field("media_retention_days", "Conservar fotos y vídeos (días)", retention, null, errors.media_retention_days),
         el("div", { class: "field" }, el("span", { class: "label" }, "Contactos externos"),
-          el("label", { class: "check" }, photos, "Enviarles fotos por Telegram y correo"))),
+          el("label", { class: "check" }, photos, "Enviar fotos por Telegram y correo"),
+          el("label", { class: "check" }, videos, "Enviar vídeos por Telegram (cuando Frigate cierra la alerta)"))),
       field("person_entities", "Helpers con la última alerta de persona", helpers, frigateHelp(STATE), errors.person_entities),
       field("frigate_url", "Dirección de Frigate (fotos y vídeos)", frigateUrl,
         (STATE.frigate || {}).api ? "Vacío: la de la integración de Frigate." : "No se encuentra la integración de Frigate: escribe su dirección, p. ej. http://servidor:5000.",

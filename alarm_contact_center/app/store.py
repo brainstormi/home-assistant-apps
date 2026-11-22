@@ -66,6 +66,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_open_minutes": 120,  # ...or this long after the trigger if nobody disarms
     "media_retention_days": 90,
     "send_photos_external": True,
+    "send_videos_telegram": True,
     "incident_entities": [],
     "person_entities": [],  # Frigate person helpers (input_text); empty = detect them
     "frigate_url": "",  # Frigate's API address; empty = taken from the Frigate integration
@@ -293,6 +294,7 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
     s["max_open_minutes"] = _int_in(s["max_open_minutes"], 15, 720, "max_open_minutes", errors)
     s["media_retention_days"] = _int_in(s["media_retention_days"], 7, 365, "media_retention_days", errors)
     s["send_photos_external"] = bool(s["send_photos_external"])
+    s["send_videos_telegram"] = bool(s["send_videos_telegram"])
 
     entities = s["incident_entities"]
     if not isinstance(entities, list):

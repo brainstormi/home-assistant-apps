@@ -17,19 +17,22 @@ from tests.test_acc_frigate import MediaPort  # noqa: E402
 
 class FakeTelegram:
     def __init__(self):
-        self.sent, self.edits, self.photos = [], [], []
+        self.sent, self.edits, self.photos, self.videos = [], [], [], []
         self.next_id = 100
 
-    async def send(self, chat, text, silent=False):
+    async def send(self, chat, text, silent=False, html_mode=False):
         self.next_id += 1
         self.sent.append((chat, text))
         return self.next_id
 
-    async def edit(self, chat, mid, text):
+    async def edit(self, chat, mid, text, html_mode=True):
         self.edits.append((chat, mid, text))
 
     async def photo(self, chat, data, caption):
         self.photos.append((chat, caption))
+
+    async def video(self, chat, data, caption):
+        self.videos.append((chat, caption, len(data)))
 
 
 class NotifierTests(unittest.IsolatedAsyncioTestCase):
@@ -72,7 +75,7 @@ class NotifierTests(unittest.IsolatedAsyncioTestCase):
         await inc.task
         await self.settle()
         # Telegram: live message, ack milestone, the photo
-        live = [t for c, t in self.tg.sent if t.startswith("🚨")]
+        live = [t for c, t in self.tg.sent if t.startswith("<b>🚨")]
         self.assertEqual(len(live), 1)
         self.assertTrue(any("Pablo atiende la alarma" in t for _, t in self.tg.sent))
         self.assertEqual([c for c, _ in self.tg.photos], ["1111"])
@@ -116,7 +119,7 @@ class NotifierTests(unittest.IsolatedAsyncioTestCase):
         await self.settle()
         self.assertEqual([m[0] for m in self.mails], ["pablo@example.com"])
         self.assertIn("SIMULACRO", self.mails[0][1])
-        self.assertTrue(self.tg.sent[0][1].startswith("🧪"))
+        self.assertTrue(self.tg.sent[0][1].startswith("<b>🧪"))
 
     async def test_disarmed_during_calls_only_final_email(self):
         self.port.gate = asyncio.Event()
@@ -151,13 +154,14 @@ class NotifierTests(unittest.IsolatedAsyncioTestCase):
 class RenderTests(unittest.TestCase):
     INC = {"kind": "alarm", "sensor": "Puerta", "started": "2026-11-22T16:05:23+01:00", "status": "acknowledged",
            "acknowledged_by": "Luis", "phase": "open",
-           "events": [{"t": "2026-11-22T16:05:23+01:00", "text": "Alarma disparada", "detail": "Sensor: Puerta"},
-                      {"t": "2026-11-22T16:06:29+01:00", "text": "Luis confirma el aviso", "detail": ""}]}
+           "events": [{"t": "2026-11-22T16:05:23+01:00", "kind": "triggered", "text": "Alarma disparada", "detail": "Sensor: Puerta"},
+                      {"t": "2026-11-22T16:06:29+01:00", "kind": "confirmed", "text": "Luis confirma el aviso", "detail": ""}]}
 
     def test_telegram_and_email_text(self):
         text = telegram_text(self.INC)
-        self.assertIn("Estado: atendida por Luis. Sigue abierta hasta que se desarme.", text)
-        self.assertIn("16:06:29  Luis confirma el aviso", text)
+        self.assertIn("<b>Estado: atendida por Luis. Sigue abierta hasta que se desarme.</b>", text)
+        self.assertIn("🟢 <code>16:06:29</code> Luis confirma el aviso", text)
+        self.assertIn("🔴 <code>16:05:23</code> Alarma disparada <i>(Sensor: Puerta)</i>", text)
         subject, plain, body = email_parts(self.INC, final=False)
         self.assertTrue(subject.startswith("Aviso: Alarma en casa · Puerta"))
         self.assertIn("informe final", plain)
@@ -219,3 +223,63 @@ class SenderTests(unittest.TestCase):
         with mock.patch.object(smtplib, "SMTP", FakeSMTP):
             send_email(settings, "a@example.com", "s", "t", "<p>t</p>")
         self.assertEqual(sent[0]["From"], "Alarma de casa <alarma@example.com>")
+
+
+class NumberingAndVideoTests(unittest.IsolatedAsyncioTestCase):
+    def test_numbers_and_captions(self):
+        from app.notify import media_caption, media_numbers
+
+        inc = {"kind": "alarm", "sensor": "Puerta", "started": "2026-11-22T16:05:23+01:00", "status": "calling", "phase": "calling",
+               "events": [{"t": "2026-11-22T16:04:57+01:00", "kind": "person", "text": "Persona en Portal", "detail": "antes del disparo",
+                           "media": {"review_id": "r1", "event_id": "e1"}},
+                          {"t": "2026-11-22T16:05:23+01:00", "kind": "triggered", "text": "Alarma disparada", "detail": ""},
+                          {"t": "2026-11-22T16:06:00+01:00", "kind": "person", "text": "Persona en Patio", "detail": "",
+                           "media": {"review_id": "r2", "event_id": "e2"}}]}
+        self.assertEqual(media_numbers(inc), {"r1": 1, "r2": 2})
+        text = telegram_text(inc)
+        self.assertIn("Persona en Portal 📷1", text)
+        self.assertIn("Persona en Patio 📷2", text)
+        self.assertEqual(media_caption(inc, inc["events"][2], "🎬"), "🎬2 · Persona en Patio · 16:06:00")
+
+    async def test_video_sent_once_the_event_is_over(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = Store(Path(tmp.name) / "c.json")
+        store.save_settings({"call_delay": 0, "rounds": 1, "external_notify_delay": 0})
+        store.save_contact({"kind": "external", "name": "Pablo", "phone": "600000003", "telegram_chat_id": "1111"}, PinStatus("none", []))
+        media = MediaStore(Path(tmp.name) / "m")
+
+        class FakeFrigate:
+            def __init__(self):
+                self.calls = 0
+
+            def event(self, event_id):
+                self.calls += 1
+                return {"end_time": 1.0 if self.calls >= 3 else None, "has_clip": True}
+
+            def open(self, event_id, name, range_header=""):
+                import io
+
+                class R(io.BytesIO):
+                    pass
+                return R(b"mp4-bytes")
+
+        frigate = FakeFrigate()
+        tg = FakeTelegram()
+        notifier = Notifier(store, media, time_scale=0, telegram=tg, mailer=None, frigate=frigate)
+        notifier._mailer = lambda *a: asyncio.sleep(0)
+        engine = Engine(store, MediaPort({"600000003": [{"resultado": "confirmed"}]}), IncidentLog(Path(tmp.name) / "i.json"),
+                        time_scale=0, media=media)
+        engine.frigate.set_helpers({"input_text.a": "Portal"})
+        engine.listeners.append(notifier.on_change)
+        now = time.time()
+        await engine.on_person_helper("input_text.a", f"{now - 30:.6f}-review,{now - 29:.6f}-det001")
+        await engine.on_alarm_state("armed_away")
+        await engine.on_alarm_state("triggered", TRIGGER)
+        await engine.current.task
+        for _ in range(5):
+            await asyncio.sleep(0)
+            await notifier.drain()
+        self.assertEqual(tg.videos, [("1111", "🎬1 · Persona en Portal · " + tg.photos[0][1].split(" · ")[2] + " · Alerta de Frigate · antes del disparo", 9)])
+        self.assertGreaterEqual(frigate.calls, 3)
+        self.assertTrue(media.clip_path(f"{now - 29:.6f}-det001").exists())

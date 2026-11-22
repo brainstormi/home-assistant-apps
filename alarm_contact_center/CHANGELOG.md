@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0
+
+- Telegram: formatted message (bold title and state, a coloured dot per entry as in the panel, times in monospace).
+- Photos are numbered in the timeline and in their caption (📷1), so each one matches its entry even though they arrive after the live message.
+- Videos by Telegram: once Frigate closes an alert, its clip is sent (🎬1), up to 50 MB. "Enviar vídeos por Telegram" in Ajustes → Cámaras. The clip is cached and shared with the panel.
+- Email: the same coloured dots in the timeline.
+
 ## 0.8.1
 
 - Email: sender name ("Nombre del remitente", default "Alarma de casa") next to the sender address.

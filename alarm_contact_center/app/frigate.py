@@ -179,6 +179,15 @@ class FrigateAPI:
         with self.open(event_id, name, timeout=20) as resp:
             return resp.read()
 
+    def event(self, event_id: str) -> dict[str, Any]:
+        """Frigate's event record (end_time is set once the event is over)."""
+        import json
+
+        if not self.base:
+            raise OSError("Frigate address unknown")
+        with urllib.request.urlopen(f"{self.base}/api/events/{event_id}", timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
     def retain(self, event_id: str) -> None:
         if not self.base:
             raise OSError("Frigate address unknown")
