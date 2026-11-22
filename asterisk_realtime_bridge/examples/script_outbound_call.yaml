@@ -1,0 +1,163 @@
+# Home Assistant script: call ONE number through the bridge and return the result.
+# Settings > Automations & scenes > Scripts > Add > Edit in YAML, paste, and
+# replace the two app slugs:
+#   <bridge-slug>    this app, e.g. xxxxxxxx_asterisk_realtime_bridge
+#   <asterisk-slug>  your Asterisk app, e.g. xxxxxxxx_asterisk
+# (Settings > Apps > the app > the slug is in the URL.)
+alias: Outbound call with a notice
+description: >-
+  Calls ONE number with the phone assistant, reads the notice and answers
+  questions according to the profile. Retries up to "attempts" times and returns
+  result (no_answer, answered, confirmed, cancelled, failed, timeout), success,
+  attempts and detail (the bridge's last event: confirmed_by, dialstatus...).
+icon: mdi:phone-outgoing
+mode: queued
+max: 10
+fields:
+  number:
+    name: Number
+    description: Number to call, as your trunk dials it (e.g. 600111222).
+    required: true
+    selector:
+      text: {}
+  message:
+    name: Notice
+    description: Text the assistant reads when the phone is answered.
+    required: true
+    selector:
+      text:
+        multiline: true
+  profile:
+    name: Profile
+    description: "QueryOnly: questions only. Management: questions, and changes with the PIN."
+    required: true
+    default: QueryOnly
+    selector:
+      select:
+        options: [QueryOnly, Management]
+  person:
+    name: Person
+    description: The person called (person.xxx or name). Selects the personal PIN in individual mode.
+    selector:
+      text: {}
+  attempts:
+    name: Attempts
+    default: 1
+    selector:
+      number: {min: 1, max: 5, mode: box}
+  retry_wait:
+    name: Wait between attempts (s)
+    default: 60
+    selector:
+      number: {min: 10, max: 600, mode: box, unit_of_measurement: s}
+  answer_timeout:
+    name: Time to answer (s)
+    description: Longer than the ring time of the dialplan (30 s).
+    default: 60
+    selector:
+      number: {min: 20, max: 300, mode: box, unit_of_measurement: s}
+  require_confirmation:
+    name: Require confirmation
+    description: Retry until the person confirms (a voicemail also answers).
+    default: true
+    selector:
+      boolean: {}
+  confirm:
+    name: Confirmation
+    default: implicit
+    selector:
+      select:
+        options: [implicit, voice, dtmf, voice_or_dtmf]
+  confirm_key:
+    name: Confirmation key
+    default: "1"
+    selector:
+      text: {}
+  confirm_text:
+    name: Text when asking for confirmation
+    selector:
+      text: {}
+  assistant_name:
+    name: How the assistant introduces itself
+    selector:
+      text: {}
+  engine:
+    name: Engine
+    default: realtime
+    selector:
+      select:
+        options: [realtime, local]
+sequence:
+  - variables:
+      result: pending
+      attempt: 0
+      detail: {}
+      p_attempts: "{{ attempts | default(1) | int(1) }}"
+      p_wait: "{{ retry_wait | default(60) | int(60) }}"
+      p_timeout: "{{ answer_timeout | default(60) | int(60) }}"
+      p_confirm_required: "{{ require_confirmation | default(true) | bool }}"
+      p_ok: "{{ ['confirmed'] if p_confirm_required else ['answered', 'confirmed'] }}"
+  - repeat:
+      sequence:
+        - variables:
+            attempt: "{{ repeat.index }}"
+            call_id: >-
+              {{ '%04x%04x-%04x-4%03x-%04x-%04x%04x%04x' | format(range(65536)|random,
+              range(65536)|random, range(65536)|random, range(4096)|random,
+              (range(16384)|random) + 32768, range(65536)|random, range(65536)|random,
+              range(65536)|random) }}
+        - alias: Announce the call to the bridge
+          action: hassio.addon_stdin
+          data:
+            addon: <bridge-slug>
+            input:
+              action: outbound
+              call_id: "{{ call_id }}"
+              message: "{{ message }}"
+              profile: "{{ profile | default('QueryOnly') }}"
+              person: "{{ person | default('') }}"
+              number: "{{ number }}"
+              timeout: "{{ p_timeout }}"
+              confirm: "{{ confirm | default('implicit') }}"
+              confirm_key: "{{ confirm_key | default('1') | string }}"
+              confirm_text: "{{ confirm_text | default('') }}"
+              assistant_name: "{{ assistant_name | default('') }}"
+              engine: "{{ engine | default('realtime') }}"
+        - alias: Ask Asterisk to dial
+          action: hassio.addon_stdin
+          data:
+            addon: <asterisk-slug>
+            input: >-
+              channel originate Local/{{ number }}_{{ call_id }}@bridge-outbound
+              extension {{ call_id }}@bridge-notice
+        - alias: Wait for the end of the call
+          wait_for_trigger:
+            - trigger: event
+              event_type: asterisk_realtime_bridge_call
+              event_data:
+                call_id: "{{ call_id }}"
+                stage: ended
+          timeout: "{{ p_timeout + 900 }}"
+          continue_on_timeout: true
+        - variables:
+            detail: "{{ wait.trigger.event.data if wait.trigger else {'call_id': call_id} }}"
+            result: "{{ wait.trigger.event.data.result if wait.trigger else 'timeout' }}"
+        - alias: Wait before the next attempt
+          if:
+            - condition: template
+              value_template: "{{ repeat.index < p_attempts and result not in p_ok }}"
+          then:
+            - delay: "{{ p_wait }}"
+      until:
+        - condition: template
+          value_template: "{{ repeat.index >= p_attempts or result in p_ok }}"
+  - variables:
+      response:
+        result: "{{ result }}"
+        success: "{{ result in p_ok }}"
+        attempts: "{{ attempt }}"
+        number: "{{ number }}"
+        person: "{{ person | default('') }}"
+        detail: "{{ detail }}"
+  - stop: Call finished
+    response_variable: response

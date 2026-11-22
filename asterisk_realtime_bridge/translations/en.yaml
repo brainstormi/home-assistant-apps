@@ -1,0 +1,110 @@
+configuration:
+  openai_api_key:
+    name: OpenAI API key
+    description: Create a dedicated key in a project with a spending limit.
+  model:
+    name: Realtime model
+    description: gpt-realtime-2.1 (default), gpt-realtime-2.1-mini (cheaper and faster, less capable) or gpt-realtime-2. GPT-Live is not supported yet.
+  voice:
+    name: Voice
+    description: For example marin, cedar, alloy, coral, verse...
+  language:
+    name: Language
+    description: Language code used by the assistant, Home Assistant conversation agents and transcription (en, es, de...).
+  assistant_name:
+    name: Assistant name
+    description: How the assistant introduces itself.
+  accent:
+    name: Accent and dialect (optional)
+    description: Steers the voice, e.g. "Spanish from Spain (Castilian), standard peninsular accent". The result depends on the model and voice; try different voices too.
+  prompt:
+    name: Assistant prompt (template)
+    description: "How the assistant introduces itself and behaves. Placeholders: {assistant_name}, {language}, {language_name}, {accent_line} and {pin_rules} (the last two on a line of their own). Leave it empty to use the built-in template. Multi-line editing is easier with Edit in YAML; a literal \\n also works as a line break."
+  pin_enabled:
+    name: Require PIN
+    description: If disabled, any call reaching the bridge can control the home (your Asterisk dialplan would be the only barrier).
+  pin_mode:
+    name: PIN mode
+    description: "global: one PIN (Security PIN) for Management calls and incoming calls; personal PINs are ignored. individual: one PIN per Home Assistant person (Personal PINs); the global PIN is ignored. While the chosen mode is incomplete, Management calls are query only. Restart the app after changing it and check sensor.asterisk_realtime_bridge_pin."
+  pin:
+    name: Security PIN
+    description: Global mode only (ignored in individual mode). Digits only. Can be spoken or typed on the phone keypad.
+  pins:
+    name: Personal PINs
+    description: "Individual mode only (ignored in global mode). One entry per Home Assistant person. Restart the app after saving; sensor.asterisk_realtime_bridge_pin then shows who has a PIN and any problem."
+    fields:
+      person:
+        name: Person
+        description: "The person's entity id, e.g. person.sonia (lower case). Copy it from Settings > People, or from people_without_pin in sensor.asterisk_realtime_bridge_pin."
+      pin:
+        name: PIN
+        description: "At least 6 digits, not trivial (111111, 123456, 121212...) and different for each person. An invalid PIN leaves the mode incomplete: Management calls become query only."
+      numbers:
+        name: Phone numbers
+        description: "Optional. This person's phones, comma separated (600111222, +34 600 333 444). An incoming call from one of them asks for this person's PIN; other numbers are query only. The number only chooses whose PIN is asked, it never skips it. The number must also be allowed in the Asterisk dialplan."
+      name:
+        name: Label
+        description: "Optional. A label for your own reference; it is not used to identify the person."
+  max_pin_attempts:
+    name: PIN attempts
+    description: The call is hung up after this many failures.
+  max_call_seconds:
+    name: Maximum call length (s)
+    description: Ends the call after this time to cap spending.
+  max_concurrent_calls:
+    name: Concurrent calls
+    description: Maximum simultaneous calls.
+  conversation_agent:
+    name: Home Assistant conversation agent
+    description: Agent that executes the commands. Defaults to the built-in Assist agent (no LLM), which only touches exposed entities.
+  fallback_agent:
+    name: Fallback agent (optional)
+    description: Used when the main agent does not understand the command, for example conversation.openai_conversation. Adds latency and cost.
+  query_include:
+    name: Read-only scope without PIN (labels)
+    description: "What an outbound call can tell before a PIN is verified (always in QueryOnly). Labels separated by commas, by name or id. EMPTY = the same entities exposed to Assist in Home Assistant (the scope you already control by voice). Nothing outside this scope can be read, and nothing can ever be changed without a PIN."
+  query_exclude:
+    name: Exclude from that scope
+    description: "Labels, entity ids (light.kitchen) or device names, separated by commas, removed from the read-only scope. Empty = nothing excluded."
+  fallback_tts:
+    name: Fallback voice when OpenAI fails (TTS entity)
+    description: "A Home Assistant TTS entity, for example tts.piper. If OpenAI is unavailable (outage, invalid key, no credit), outbound notices are read with it and confirmed with a key, and incoming calls hear that the assistant is not available. Empty = no fallback."
+  fallback_tts_voice:
+    name: Fallback voice (optional)
+    description: "A voice of that TTS engine, for example es_ES-davefx-medium for Piper. Empty = the engine's default voice."
+  openai_check_minutes:
+    name: OpenAI check interval (minutes)
+    description: "How often the bridge checks that OpenAI works (it opens and closes a session, with no audio and no tokens) and publishes binary_sensor.asterisk_realtime_bridge_openai. 0 = only at start-up. Real calls also update it."
+  local_conversation:
+    name: Local conversation when OpenAI fails
+    description: "Instead of only reading notices, talk with Home Assistant locally when OpenAI is unavailable: speech-to-text (local_stt, e.g. Whisper), Home Assistant's own Assist and the fallback voice. Slower and more literal; the PIN is typed on the keypad only. Needs fallback_tts. Off = only notices and the not-available message."
+  local_stt:
+    name: Speech-to-text for the local conversation
+    description: "A Home Assistant STT entity, for example stt.faster_whisper. Set its language to yours (for Whisper, small-int8 and an initial prompt with your home's words help a lot)."
+  vad:
+    name: Turn detection
+    description: server_vad (silence based) or semantic_vad (meaning based).
+  vad_threshold:
+    name: Voice threshold (server_vad)
+    description: Raise it if the assistant interrupts itself because of noise or echo.
+  vad_silence_ms:
+    name: Silence to end a turn (ms)
+    description: How much silence means the caller has finished speaking.
+  noise_reduction:
+    name: Noise reduction
+    description: near_field for normal phone calls.
+  port:
+    name: AudioSocket port
+    description: Port Asterisk connects to.
+  bind_address:
+    name: AudioSocket bind address
+    description: Keep 127.0.0.1 if Asterisk runs on the same host. AudioSocket has no authentication; if you expose it, restrict access with a firewall.
+  extra_instructions:
+    name: Extra instructions
+    description: Text appended to the default assistant instructions (for example, how your rooms and devices are named).
+  log_level:
+    name: Log level
+    description: debug shows more detail.
+  log_transcripts:
+    name: Log transcripts
+    description: Writes what is said to the log. This is private; enable only to debug.

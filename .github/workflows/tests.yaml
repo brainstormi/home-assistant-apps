@@ -10,6 +10,7 @@ jobs:
       matrix:
         app:
           - alarm_contact_center
+          - asterisk_realtime_bridge
     defaults:
       run:
         working-directory: ${{ matrix.app }}

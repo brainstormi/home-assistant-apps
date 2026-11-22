@@ -15,6 +15,7 @@ Apps from the same repository share the same id prefix, so they can find each ot
 | App | Description |
 |-----|-------------|
 | [Alarm Contact Center](alarm_contact_center/) | Alerts a list of contacts when the alarm goes off: Asterisk phone calls, Home Assistant app notifications, email and Telegram. |
+| [Asterisk Realtime Bridge](asterisk_realtime_bridge/) | Talk to Home Assistant by phone: Asterisk AudioSocket + OpenAI Realtime, with a local fallback (Whisper, Assist, Piper), PINs and outbound notice calls. |
 
 ## Development
 
