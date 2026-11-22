@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- "Reenviar informe" on a closed incident: sends its timeline, photos and videos by Telegram and the final report by email to the chosen contacts (by default, those who took part).
+
 ## 0.9.0
 
 - Telegram: formatted message (bold title and state, a coloured dot per entry as in the panel, times in monospace).

@@ -544,6 +544,71 @@ class Notifier:
             except Exception as err:  # noqa: BLE001
                 self._failed(inc, f"correo a {c['name']}", err)
 
+    # ---------------------------------------------------------- resend
+    async def resend(self, data: dict[str, Any], contact_ids: list[str]) -> dict[str, Any]:
+        """Send an incident's report again (panel button): the Telegram timeline with
+        its photos (videos follow in the background) and the final email."""
+        chosen = [c for c in self.store.contacts() if c["id"] in set(contact_ids)]
+        chosen = [c for c in chosen if c["email"] or c["telegram_chat_id"]]
+        if not chosen:
+            raise RuntimeError("Elige al menos un contacto con correo o Telegram.")
+        sent: list[str] = []
+        errors: list[str] = []
+        settings = self.store.settings()
+        photos = [(e, self.media.read(data["id"], e["media"]["snapshot"]))
+                  for e in data.get("events") or []
+                  if self.media is not None and (e.get("media") or {}).get("snapshot") and settings["send_photos_external"]]
+        photos = [(e, p) for e, p in photos if p]
+        tg = self.telegram()
+        for c in chosen:
+            if c["telegram_chat_id"]:
+                if tg is None:
+                    errors.append(f"{c['name']}: falta el token del bot")
+                else:
+                    try:
+                        await tg.send(c["telegram_chat_id"], telegram_text(data), html_mode=True)
+                        for e, photo in photos:
+                            await tg.photo(c["telegram_chat_id"], photo, media_caption(data, e, "📷"))
+                        sent.append(f"Telegram a {c['name']}")
+                    except Exception as err:  # noqa: BLE001
+                        errors.append(f"Telegram a {c['name']}: {err}")
+            if c["email"]:
+                subject, plain, body = email_parts(data, final=True)
+                attachments = [(f"{_clock(e['t']).replace(':', '')}-{i + 1}.jpg", p) for i, (e, p) in enumerate(photos[:MAX_PHOTOS_EMAIL])]
+                try:
+                    await self.mail(c["email"], "Reenvío · " + subject, plain, body, attachments)
+                    sent.append(f"correo a {c['name']}")
+                except Exception as err:  # noqa: BLE001
+                    errors.append(f"correo a {c['name']}: {err}")
+        chats = [c for c in chosen if c["telegram_chat_id"]]
+        if tg is not None and chats and settings["send_videos_telegram"] and self.frigate is not None and self.media is not None:
+            for e in data.get("events") or []:
+                event_id = (e.get("media") or {}).get("event_id")
+                if event_id:
+                    self._spawn(self._send_clip(data, tg, e, event_id, chats))
+        return {"sent": sent, "errors": errors}
+
+    async def _send_clip(self, data: dict[str, Any], tg: Any, entry: dict[str, Any], event_id: str,
+                         chats: list[dict[str, Any]]) -> None:
+        try:
+            path = self.media.clip_path(event_id)
+            if not path.exists():
+                def fetch() -> None:
+                    with self.frigate.open(event_id, "clip.mp4") as resp:
+                        self.media.cache_clip(event_id, resp)
+                await asyncio.to_thread(fetch)
+            clip = path.read_bytes()
+        except Exception as err:  # noqa: BLE001
+            log.warning("[%s] clip %s not available: %s", data.get("id"), event_id, err)
+            return
+        if len(clip) > TELEGRAM_VIDEO_MAX:
+            return
+        for c in chats:
+            try:
+                await tg.video(c["telegram_chat_id"], clip, media_caption(data, entry, "🎬"))
+            except Exception as err:  # noqa: BLE001
+                log.warning("[%s] video by Telegram to %s failed: %s", data.get("id"), c["name"], err)
+
     @staticmethod
     def _failed(inc: Any, what: str, err: Exception) -> None:
         log.warning("[%s] %s failed: %s", inc.id, what, err)

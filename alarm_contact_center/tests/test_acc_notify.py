@@ -283,3 +283,32 @@ class NumberingAndVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tg.videos, [("1111", "🎬1 · Persona en Portal · " + tg.photos[0][1].split(" · ")[2] + " · Alerta de Frigate · antes del disparo", 9)])
         self.assertGreaterEqual(frigate.calls, 3)
         self.assertTrue(media.clip_path(f"{now - 29:.6f}-det001").exists())
+
+
+class ResendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resend_report(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = Store(Path(tmp.name) / "c.json")
+        c = store.save_contact({"kind": "external", "name": "Pablo", "phone": "600000003", "email": "p@example.com",
+                                "telegram_chat_id": "1111"}, PinStatus("none", []))
+        media = MediaStore(Path(tmp.name) / "m")
+        media.save("inc1", "1795364841.846399-ig3yer", b"jpg")
+        tg = FakeTelegram()
+        mails = []
+
+        async def mailer(to, subject, plain, body, attachments):
+            mails.append((to, subject, len(attachments)))
+
+        notifier = Notifier(store, media, time_scale=0, telegram=tg, mailer=mailer)
+        data = {"id": "inc1", "kind": "drill", "sensor": "Puerta", "started": "2026-11-22T17:27:54+01:00", "status": "acknowledged",
+                "acknowledged_by": "Pablo", "phase": "closed",
+                "events": [{"t": "2026-11-22T17:27:22+01:00", "kind": "person", "text": "Persona en Portal", "detail": "",
+                            "media": {"review_id": "r1", "event_id": "1795364841.846399-ig3yer", "snapshot": "1795364841.846399-ig3yer"}}]}
+        result = await notifier.resend(data, [c["id"]])
+        self.assertEqual(result, {"sent": ["Telegram a Pablo", "correo a Pablo"], "errors": []})
+        self.assertIn("📷1", tg.sent[0][1])
+        self.assertEqual(tg.photos[0][1], "📷1 · Persona en Portal · 17:27:22")
+        self.assertEqual(mails, [("p@example.com", "Reenvío · Informe final: SIMULACRO de alarma en casa · Puerta (22/11/2026 17:27)", 1)])
+        with self.assertRaises(RuntimeError):
+            await notifier.resend(data, [])

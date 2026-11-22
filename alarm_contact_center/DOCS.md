@@ -75,6 +75,7 @@ Contacts with an email or a Telegram chat are told alongside the calls. Nothing 
 - **Telegram:** one message per contact with the timeline (a coloured dot per entry, as in the panel), edited as the incident goes on (at most every few seconds; edits are silent), a short new message when someone takes charge or nobody does, when the alarm is disarmed and when the incident closes, and the photos of people seen by the cameras as they arrive. A message that is edited cannot hold pictures, so photos and videos are numbered: the entry says 📷1 and the photo comes with "📷1 · Persona en Entrada · 17:27:22". The video (🎬1) is sent when Frigate closes the alert, which is when its clip exists (**Enviar vídeos por Telegram**, up to 50 MB; not by email, where several clips would exceed what many servers accept).
 - **Email:** one when the chain of calls ends, with the timeline so far (who took charge, or that nobody did; not sent when the alarm was disarmed during the calls), and the final report when the incident closes, with the whole timeline and up to 12 photos attached.
 - Photos go only when **Enviar fotos por Telegram y correo** is on. A message that cannot be sent is written in the timeline.
+- **Reenviar informe**, on a closed incident in **Incidentes**, sends it again to the contacts you choose: the timeline, photos and videos by Telegram, and the final report by email.
 
 Setting up, in **Ajustes**:
 
