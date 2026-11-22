@@ -59,7 +59,7 @@ Tests never run while an alarm, a drill or a test call is using the line: they w
 
 The open incident is kept in `/data/open_incident.json` on every change (and every 30 s), and what was already sent by Telegram and email in `/data/notify_state.json`. If the App restarts (an update, a crash) while an incident is open, it carries on with the same incident once it connects, according to where the alarm is now:
 
-- **Nobody had taken charge and the calls were going on:** they resume from the contact that was next, without repeating the first notification. A call that was in progress is marked as interrupted.
+- **Nobody had taken charge and the calls were going on:** they resume without repeating the first notification. A call that was in progress goes on in the Bridge: the App waits for it to end and takes its result (accepting in that call counts), then carries on with that contact's next attempt, or the next contact.
 - **Someone had taken charge, or the chain had ended:** it stays open, recording, without calling anyone.
 - **Disarmed while the App was stopped:** it is marked as disarmed at that moment, and closes after the usual minutes.
 

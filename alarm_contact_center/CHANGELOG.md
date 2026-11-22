@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.1
+
+- After a restart, a call that was in progress is waited for (the Bridge goes on with it) and its result taken: accepting in it counts, and nobody is called over it.
+- The chain carries on with the interrupted contact's next attempt (2/3), not from attempt 1.
+- The restart gap shows seconds when it lasted under a minute.
+
 ## 0.13.0
 
 - An open incident survives a restart of the App: it is saved on every change (and every 30 s) and, once connected again, it carries on according to the alarm: the calls resume from the next contact if nobody had taken charge, it stays open if someone had, and it is marked disarmed if that happened while the App was stopped. The timeline notes the gap; the same Telegram messages keep being edited and no email is sent twice.

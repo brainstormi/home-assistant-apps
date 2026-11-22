@@ -114,7 +114,7 @@ KIND_DOT = {
     "confirmed": "🟢", "acknowledged": "🟢", "disarmed": "🟢", "resolved": "🟢", "trunk_ok": "🟢",
     "sensor": "🟡", "profile": "🟡", "voicemail": "🟡", "round": "🟡", "answered": "🟡", "failed": "🟡",
     "timeout": "🟡", "limit": "🟡",
-    "call": "🔵", "burst": "🔵", "telegram": "🔵", "retry": "🟡", "skip": "⚪", "restart": "🟡", "resume": "🔵",
+    "call": "🔵", "burst": "🔵", "telegram": "🔵", "retry": "🟡", "skip": "⚪", "restart": "🟡", "resume": "🔵", "orphan": "🔵",
     "closed": "🏁",
 }
 
