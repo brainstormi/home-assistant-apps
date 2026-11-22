@@ -159,6 +159,13 @@ def describe_change(entity_id: str, state: str, device_class: str) -> str:
     return state
 
 
+def gap_time(start: float, end: float) -> str:
+    """'22:41 y las 22:43', with seconds when it all happened within a minute."""
+    a, b = time.localtime(start), time.localtime(end)
+    fmt = "%H:%M:%S" if time.strftime("%H:%M", a) == time.strftime("%H:%M", b) else "%H:%M"
+    return f"{time.strftime(fmt, a)} y las {time.strftime(fmt, b)}"
+
+
 def fmt_elapsed(seconds: float) -> str:
     seconds = int(seconds)
     if seconds < 120:
@@ -218,6 +225,12 @@ class Incident:
         self.stop_reason = ""
         self.current_call_id = ""
         self.call_answered = False
+        self.current_contact_id = ""
+        self.current_attempt = 0
+        self.resume_contact_id = ""  # after a restart: carry on with this contact...
+        self.resume_attempt = 0  # ...from this attempt
+        self.orphan_call = ""  # a call that went on while the App restarted
+        self.orphan_done = asyncio.Event()
         self.current_contact = ""
         self.calling_number = ""
         self.not_answered: list[str] = []
@@ -239,7 +252,8 @@ class Incident:
     SNAPSHOT_FIELDS = ("id", "kind", "sensor", "sensor_entity", "started", "status", "acknowledged_by", "ack_via",
                        "acknowledged_at", "events", "persons", "line_down", "simulate_line_down", "next_index",
                        "burst_seq", "not_answered", "record_until", "disarmed_at", "closed", "stop_reason",
-                       "calling_number", "current_contact", "requested_profile")
+                       "calling_number", "current_contact", "requested_profile", "current_call_id",
+                       "call_answered", "current_contact_id", "current_attempt")
 
     def snapshot(self) -> dict[str, Any]:
         """Everything needed to carry on after the App restarts."""
@@ -461,6 +475,9 @@ class Engine:
     async def on_bridge_event(self, data: dict[str, Any]) -> None:
         """asterisk_realtime_bridge_call events: learn the call_id of our call."""
         inc = self.current
+        if inc and inc.orphan_call and data.get("call_id") == inc.orphan_call:
+            await self._on_orphan_event(inc, data)
+            return
         if not inc or not self._active(inc):
             return
         if data.get("direction", "outbound") != "outbound":
@@ -764,9 +781,13 @@ class Engine:
         if not test and self._line_is_down(inc):
             await self._mark_line_down(inc, "Sin registro en el operador" if not inc.simulate_line_down else "Simulacro: línea caída")
             return await self._alert_without_line(inc, contact)
-        for attempt in range(1, contact["attempts"] + 1):
+        first = 1
+        if inc.resume_contact_id == contact["id"]:
+            first, inc.resume_contact_id, inc.resume_attempt = max(1, inc.resume_attempt), "", 0
+        for attempt in range(first, contact["attempts"] + 1):
             if inc.stop.is_set():
                 return "stopped"
+            inc.current_contact_id, inc.current_attempt = contact["id"], attempt
             atendido = "" if test else (f"{join_names(inc.not_answered)} no han contestado." if len(set(inc.not_answered)) > 1
                                         else f"{inc.not_answered[0]} no ha contestado." if inc.not_answered else "")
             message = render_message(settings["message"], nombre=contact["name"], sensor=inc.sensor,
@@ -932,19 +953,30 @@ class Engine:
         self.current = inc
         inc.on_change = self._changed
         now = time.time()
-        inc.add("restart", f"La App se ha reiniciado: sin registro entre las {hhmm(self.restored_saved_at)} y las {hhmm(now)}")
-        if inc.calling_number and not inc.chain_done:
-            inc.add("after", f"La llamada a {inc.current_contact} se interrumpió con el reinicio")
-        inc.calling_number, inc.current_call_id = "", ""
+        inc.add("restart", f"La App se ha reiniciado: sin registro entre las {gap_time(self.restored_saved_at, now)}")
+        interrupted = bool(inc.calling_number) and not inc.chain_done
         if inc.kind == "alarm" and state in DISARMED_STATES and not inc.disarmed_at:
             await self._disarmed_later(inc, "Alarma desarmada mientras la App se reiniciaba")
         resume = (not inc.chain_done and not inc.acknowledged_by and not inc.disarmed_at
                   and inc.status not in ("cancelled", "acknowledged", "disarmed"))
-        if resume:
+        if interrupted:
+            self._plan_resume_after_interruption(inc)
+        if resume and interrupted and inc.current_call_id:
+            # The Bridge carries on with that call: wait for it to end and take its
+            # result (an acceptance counts), instead of calling again over it.
+            inc.orphan_call = inc.current_call_id
+            inc.add("orphan", f"La llamada a {inc.current_contact} sigue en curso: se espera a que termine")
+            inc.chain_done = False
+            inc.task = asyncio.get_running_loop().create_task(self._resume_after_orphan(inc))
+        elif resume:
+            if interrupted:
+                inc.add("after", f"La llamada a {inc.current_contact} se interrumpió con el reinicio")
+            inc.calling_number, inc.current_call_id = "", ""
             inc.add("resume", "Se retoman los avisos donde se quedaron")
             inc.chain_done = False
             inc.task = asyncio.get_running_loop().create_task(self._run(inc, resume=True))
         else:
+            inc.calling_number, inc.current_call_id = "", ""
             inc.chain_done = True
         if not inc.closed:
             if inc.record_until <= 0:
@@ -953,6 +985,51 @@ class Engine:
                 asyncio.get_running_loop().create_task(self._closer(inc))
         self.incidents.save(inc.to_dict())
         self._changed(inc)
+
+    def _plan_resume_after_interruption(self, inc: Incident) -> None:
+        """The interrupted call used one attempt: carry on with that contact's next
+        attempt, or with the next contact if it was the last."""
+        contacts = [c for c in self._participants(inc) if c["phone"]]
+        index = next((i for i, c in enumerate(contacts) if c["id"] == inc.current_contact_id), None)
+        if index is None:
+            return
+        if inc.current_attempt < contacts[index]["attempts"]:
+            inc.next_index = index
+            inc.resume_contact_id, inc.resume_attempt = contacts[index]["id"], inc.current_attempt + 1
+        else:
+            inc.next_index = (index + 1) % len(contacts)
+
+    async def _resume_after_orphan(self, inc: Incident) -> None:
+        settings = self.store.settings()
+        limit = (settings["answer_timeout"] + 120) * self.time_scale
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(inc.orphan_done.wait(), timeout=limit)
+        if not inc.orphan_done.is_set():
+            inc.add("after", f"La llamada a {inc.current_contact} no informó de cómo terminó")
+        inc.orphan_call = ""
+        inc.calling_number, inc.current_call_id = "", ""
+        if inc.acknowledged_by or inc.disarmed_at or inc.stop.is_set():
+            inc.chain_done = True
+            self._changed(inc)
+            return
+        inc.add("resume", "Se retoman los avisos donde se quedaron")
+        await self._run(inc, resume=True)
+
+    async def _on_orphan_event(self, inc: Incident, data: dict[str, Any]) -> None:
+        stage = data.get("stage")
+        if stage == "answered":
+            inc.call_answered = True
+            return
+        if stage != "ended":
+            return
+        result = str(data.get("result") or "")
+        name = inc.current_contact
+        if result == "confirmed" and not inc.acknowledged_by:
+            inc.add("confirmed", f"{name} ha aceptado gestionar la alarma", "En la llamada que siguió durante el reinicio")
+            await self._acknowledge(inc, name, "llamada", from_call=True)
+        else:
+            inc.add("after", f"Termina la llamada a {name}", AFTER_TEXT.get(result, result))
+        inc.orphan_done.set()
 
     # ------------------------------------------------------ without line
     def _line_is_down(self, inc: Incident) -> bool:

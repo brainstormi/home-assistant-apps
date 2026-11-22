@@ -152,6 +152,72 @@ class RestartTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine2.current.only_contacts, {self.a["id"], self.b["id"]})
 
 
+class OrphanCallTests(unittest.IsolatedAsyncioTestCase):
+    """The call in progress when the App restarted goes on in the Bridge."""
+
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.store = Store(self.dir / "c.json")
+        self.store.save_settings({"call_delay": 0, "rounds": 1, "round_pause_min": 0})
+        self.luis = self.store.save_contact({"kind": "external", "name": "Luis", "phone": "600000001", "attempts": 3,
+                                             "retry_wait": 10}, PinStatus("none", []))
+        self.log = IncidentLog(self.dir / "i.json")
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    async def restart_during_call(self):
+        port = BlockPort("600000001")
+        engine = Engine(self.store, port, self.log, time_scale=0)
+        engine.state_path = self.dir / "open.json"
+        await engine.on_alarm_state("armed_away")
+        await engine.on_alarm_state("triggered", TRIGGER)
+        await asyncio.wait_for(port.blocked.wait(), 2)
+        inc = engine.current
+        await engine.on_bridge_event({"stage": "started", "direction": "outbound", "call_id": "c-1", "number": "600000001"})
+        engine.persist(inc)
+        saved = (self.dir / "open.json").read_text()
+        inc.task.cancel()
+        with __import__("contextlib").suppress(asyncio.CancelledError):
+            await inc.task
+        (self.dir / "open.json").write_text(saved)
+        port2 = FakePort({"600000001": [{"resultado": "confirmed"}]})
+        engine2 = Engine(self.store, port2, self.log, time_scale=0)
+        engine2.state_path = self.dir / "open.json"
+        engine2.restore()
+        await engine2.on_alarm_state("triggered", TRIGGER, restarted=True)
+        return engine2, port2
+
+    async def test_acceptance_in_the_orphan_call_counts(self):
+        engine, port = await self.restart_during_call()
+        inc = engine.current
+        self.assertEqual(inc.phase(), "calling")  # waiting for that call
+        self.assertEqual(port.calls, [])
+        await engine.on_bridge_event({"stage": "ended", "direction": "outbound", "call_id": "c-1", "result": "confirmed"})
+        await inc.task
+        self.assertEqual(inc.acknowledged_by, "Luis")
+        self.assertEqual(port.calls, [])  # not called again
+        self.assertIn("En la llamada que siguió durante el reinicio", [e["detail"] for e in inc.events])
+
+    async def test_unanswered_orphan_then_next_attempt(self):
+        engine, port = await self.restart_during_call()
+        inc = engine.current
+        await engine.on_bridge_event({"stage": "ended", "direction": "outbound", "call_id": "c-1", "result": "no_answer"})
+        await inc.task
+        texts = [e["text"] for e in inc.events]
+        self.assertIn("Llamando a Luis (2/3)", texts)  # the interrupted call was attempt 1
+        self.assertNotIn("Llamando a Luis (1/3)", texts[texts.index("Se retoman los avisos donde se quedaron"):])
+        self.assertEqual(inc.acknowledged_by, "Luis")
+
+    def test_gap_text(self):
+        from app.engine import gap_time
+
+        base = time.mktime((2026, 11, 22, 23, 11, 5, 0, 0, -1))
+        self.assertEqual(gap_time(base, base + 40), "23:11:05 y las 23:11:45")
+        self.assertEqual(gap_time(base, base + 120), "23:11 y las 23:13")
+
+
 class NotifierStateTests(unittest.TestCase):
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
