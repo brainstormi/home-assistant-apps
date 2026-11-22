@@ -189,3 +189,18 @@ class MediaStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DescribeTests(unittest.TestCase):
+    def test_texts(self):
+        from app.engine import describe_change
+
+        self.assertEqual(describe_change("binary_sensor.ventana", "on", "window"), "se abre")
+        self.assertEqual(describe_change("binary_sensor.ventana", "off", "window"), "se cierra")
+        self.assertEqual(describe_change("binary_sensor.salon_occupancy", "on", "occupancy"), "detecta presencia")
+        self.assertEqual(describe_change("binary_sensor.salon_occupancy", "off", "occupancy"), "")
+        self.assertEqual(describe_change("binary_sensor.patio_person_occupancy", "on", "occupancy"), "detecta una persona")
+        self.assertEqual(describe_change("binary_sensor.pir", "on", "motion"), "detecta movimiento")
+        self.assertEqual(describe_change("lock.puerta", "unlocked", ""), "se abre la cerradura")
+        self.assertEqual(describe_change("lock.puerta", "unlocking", ""), "")
+        self.assertEqual(describe_change("lock.puerta", "unavailable", ""), "no disponible")

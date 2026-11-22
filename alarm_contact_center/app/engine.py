@@ -102,19 +102,28 @@ def join_names(names: list[str]) -> str:
 
 
 OPENING_CLASSES = {"door", "window", "garage_door", "opening"}
-MOTION_CLASSES = {"motion", "occupancy", "presence"}
+LOCK_TEXT = {"locked": "se cierra con llave", "unlocked": "se abre la cerradura", "open": "abierta",
+             "jammed": "atascada", "unlocking": "", "locking": "", "opening": ""}
 
 
 def describe_change(entity_id: str, state: str, device_class: str) -> str:
     """Short Spanish text for a sensor change worth putting in the timeline ('' = skip)."""
     if state in ("unavailable", "unknown", ""):
         return "no disponible" if state == "unavailable" else ""
+    if entity_id.startswith("lock."):
+        return LOCK_TEXT.get(state, state)
     if entity_id.startswith("binary_sensor."):
+        if state != "on":
+            return "se cierra" if device_class in OPENING_CLASSES else ""
         if device_class in OPENING_CLASSES:
-            return "se abre" if state == "on" else "se cierra"
-        if device_class in MOTION_CLASSES:
-            return "detecta movimiento" if state == "on" else ""
-        return "activo" if state == "on" else ""
+            return "se abre"
+        if "person" in entity_id or "persona" in entity_id:
+            return "detecta una persona"
+        if device_class == "motion":
+            return "detecta movimiento"
+        if device_class in ("occupancy", "presence"):
+            return "detecta presencia"
+        return "activo"
     return state
 
 

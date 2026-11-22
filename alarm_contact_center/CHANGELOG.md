@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4
+
+- Incident sensors: locks ("se cierra con llave", "se abre la cerradura", "atascada"), person occupancy ("detecta una persona") and presence described in Spanish.
+
 ## 0.5.3
 
 - Clips are downloaded once, cached for two days and served with Range, so they play on iPhone (Frigate builds clips on the fly and ignores Range).
