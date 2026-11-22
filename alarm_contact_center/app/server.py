@@ -247,10 +247,12 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
             try:
                 resp = app.ha.open_frigate(event_id, name, self.headers.get("Range") or "")
             except urllib.error.HTTPError as err:
+                log.warning("Frigate %s for %s: HTTP %s %s", name, event_id, err.code, err.reason)
                 status = HTTPStatus.NOT_FOUND if err.code == 404 else HTTPStatus.BAD_GATEWAY
                 self._send_json({"error": "Frigate ya no tiene este vídeo." if err.code == 404 else "Frigate no responde."}, status)
                 return
-            except (urllib.error.URLError, OSError):
+            except (urllib.error.URLError, OSError) as err:
+                log.warning("Frigate %s for %s: %s", name, event_id, err)
                 self._send_json({"error": "Frigate no responde."}, HTTPStatus.BAD_GATEWAY)
                 return
             with resp:
