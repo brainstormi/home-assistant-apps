@@ -1,0 +1,4 @@
+configuration:
+  log_level:
+    name: Nivel de registro
+    description: debug muestra más detalle.

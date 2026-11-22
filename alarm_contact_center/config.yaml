@@ -1,0 +1,17 @@
+name: Alarm Contact Center
+version: "0.2.3"
+slug: alarm_contact_center
+description: Alerts a list of contacts when the alarm goes off (Asterisk phone calls, Home Assistant app notifications, email and Telegram).
+url: https://github.com/brainstormi/home-assistant-apps/tree/main/alarm_contact_center
+arch:
+  - amd64
+  - aarch64
+init: false
+ingress: true
+panel_icon: mdi:shield-alert
+panel_title: Alarm Contact Center
+homeassistant_api: true
+options:
+  log_level: info
+schema:
+  log_level: list(debug|info|warning|error)
