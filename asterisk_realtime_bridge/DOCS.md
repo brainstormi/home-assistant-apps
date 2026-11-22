@@ -230,7 +230,8 @@ Other commands (same `hassio.addon_stdin`):
 ```yaml
 action: note            # tell the person on the phone something, without hanging up
 call_id: "0b6c3a52-..."
-text: "The alarm has been disarmed by Sonia."
+text: "The alarm has been disarmed by Marta."
+resolve: true           # optional: the notice no longer needs confirming
 ```
 
 ```yaml
@@ -238,7 +239,15 @@ action: hangup          # hang up this call; without call_id, every call
 call_id: "0b6c3a52-..."
 ```
 
-A note is said at once by the assistant in its own words (or read with the fallback voice in the local conversation); the event `stage: note` with `delivered: true/false` tells whether there was a conversation to deliver it to. `hangup` ends calls in progress (`ended_by: hangup`) and withdraws calls that are still ringing (`result: cancelled`); to stop the phone ringing, also hang the channel up in Asterisk (for example `channel request hangup all`). A withdrawn or expired call that is answered later is hung up at once: it is never taken for an incoming call.
+A note is said by the assistant in its own words as soon as it finishes its sentence (or read with the fallback voice in the local conversation); the event `stage: note` with `delivered: true/false` tells whether there was a conversation to deliver it to.
+
+With `resolve: true` the note **closes the notice** (the alarm was disarmed, someone else is dealing with it): the assistant stops talking at once, says the note, asks for no confirmation any more, offers in one sentence to answer a question and, if there is none, says goodbye and hangs up. The call ends with `result: resolved` (and `resolved: true`), so it is not mistaken for "did not confirm".
+
+`hangup` ends calls in progress (`ended_by: hangup`) and withdraws calls that are still ringing (`result: cancelled`). For a ringing call the bridge also asks Asterisk to hang it up, so the phone stops ringing in a second or two: it sends `channel originate Local/<number>_<call id>@bridge-kill application Wait 1` to the Asterisk app (`asterisk_app` option, through Home Assistant's `hassio.addon_stdin`), and the `bridge-kill` context hangs up that call's channels (see the dialplan below). It needs the `number` in the outbound command. A failure is only logged: the call is cancelled anyway. A withdrawn or expired call that is answered later is hung up at once: it is never taken for an incoming call.
+
+**Silence.** If nobody speaks or presses a key for `silence_seconds` (default 8) after the assistant has finished, it asks again; after `silence_reprompts` (default 2) unanswered prompts it says goodbye and hangs up, and the `ended` event carries `ended_by: silence`. After a resolving note, silence ends the call at once. `silence_seconds: 0` turns this off.
+
+**Answering machines (optional).** To detect them, dial with the `bridge-notice-amd` context instead of `bridge-notice` (it runs Asterisk's `AMD()` when the phone is answered; it adds 2-4 s and sometimes mistakes a person with a long greeting for a machine, so it is off unless you choose that context). When `AMD()` reports `MACHINE`, the notice is not read: the call ends with `result: voicemail`, `amdstatus: MACHINE` and `amdcause` (`INITIALSILENCE`, `LONGGREETING`, `MAXWORDS`...). If the outbound command has `voicemail_message`, that short text is left on the machine with the fallback voice (`fallback_tts`) first (`voicemail_message_left: true`). When `AMD()` is not sure, the call goes on as usual and the silence rule above applies.
 
 The bridge keeps no contacts and no call policy: who to call, with which profile, what counts as a confirmation and what to do with the result are decided by the caller (your script, automation or alarm) in every command.
 
@@ -284,13 +293,14 @@ Event `asterisk_realtime_bridge_call`:
 | `call_id` | the UUID of the command |
 | `direction` | `outbound` or `inbound` |
 | `stage` | `started` (command accepted / incoming call connected), `answered` (outbound), `note`, `ended` |
-| `result` (when `ended`) | `no_answer` (not answered within `timeout`, or Asterisk reported `NOANSWER`), `answered`, `confirmed` (the person confirmed the notice), `cancelled` (withdrawn by `hangup` before it was answered), `failed` (invalid command, too many calls, a dial failure such as `BUSY`, or the assistant could not start) |
+| `result` (when `ended`) | `no_answer` (not answered within `timeout`, or Asterisk reported `NOANSWER`), `answered`, `confirmed` (the person confirmed the notice), `resolved` (a note with `resolve: true` closed the notice), `voicemail` (an answering machine, with `bridge-notice-amd`), `cancelled` (withdrawn by `hangup` before it was answered), `failed` (invalid command, too many calls, a dial failure such as `BUSY`, or the assistant could not start) |
+| `amdstatus`, `amdcause`, `voicemail_message_left` | with `result: voicemail` |
 | `dialstatus` | when Asterisk reports why the call was not answered: `NOANSWER`, `BUSY`, `CONGESTION`, `CHANUNAVAIL`... (needs the dialplan below) |
 | `profile`, `person`, `number`, `engine` | as sent in the command (`InboundCall` for incoming calls, with the caller's `number` and matched `person`) |
 | `effective_profile` | outbound: the profile actually applied (`QueryOnly` when `Management` had no PIN to use) |
 | `access` | inbound: `pin`, `query_only` or `open` |
 | `confirmed_by` | when confirmed: `implicit`, `voice` or `dtmf` |
-| `ended_by` | `hangup` when Home Assistant hung the call up |
+| `ended_by` | `hangup` when Home Assistant hung the call up; `silence` when nobody answered the prompts |
 | `duration`, `pin_verified`, `pin_person` | when `ended`; `pin_person` is the person of the personal PIN (empty for the global one) |
 
 A voicemail can answer the call: then the result is `answered`, not `confirmed`. Use `confirmed` when you need to know that a person got the notice.
@@ -322,6 +332,24 @@ exten => _fa11.,1,Answer()
 exten => _[0-9a-f].,1,NoOp(Notice ${EXTEN} answered)
  same => n,Answer()
  same => n,AudioSocket(${EXTEN},127.0.0.1:9092)
+ same => n,Hangup()
+
+; Optional: the same, detecting answering machines first (dial "extension <call_id>@bridge-notice-amd").
+[bridge-notice-amd]
+exten => _[0-9a-f].,1,Answer()
+ same => n,AMD()
+ same => n,GotoIf($["${AMDSTATUS}" = "MACHINE"]?machine)
+ same => n,AudioSocket(${EXTEN},127.0.0.1:9092)
+ same => n,Hangup()
+ same => n(machine),Set(LIST=INITIALSILENCE-LONGGREETING-MAXWORDS-MAXWORDLENGTH-TOOLONG-HUMAN)
+ same => n,Set(CODE=00${FIELDNUM(LIST,-,${CUT(AMDCAUSE,-,1)})})
+ same => n,AudioSocket(a3d000${CODE:-2}${EXTEN:8},127.0.0.1:9092)
+ same => n,Hangup()
+
+; Stops a withdrawn call that is still ringing (the bridge sends
+; "channel originate Local/<number>_<call_id>@bridge-kill application Wait 1").
+[bridge-kill]
+exten => _X.,1,SoftHangup(Local/${EXTEN}@bridge-outbound,a)
  same => n,Hangup()
 ```
 
@@ -385,6 +413,8 @@ OpenAI has no API for the remaining prepaid credit; set spending alerts and auto
 | `query_include` / `query_exclude` | – / – | Read-only scope for outbound calls without a PIN (empty include = Assist scope) |
 | `max_call_seconds` | `300` | Hard limit on call length (cost control) |
 | `max_concurrent_calls` | `1` | Simultaneous calls |
+| `silence_seconds` / `silence_reprompts` | `8` / `2` | Ask again after this silence; hang up after this many prompts (0 s = off) |
+| `asterisk_app` | `3e533915_asterisk` | The Asterisk app, to stop withdrawn calls from ringing |
 | `vad`, `vad_threshold`, `vad_silence_ms` | `server_vad`, `0.5`, `500` | Turn detection |
 | `noise_reduction` | `near_field` | `near_field`, `far_field` or `off` |
 | `port` / `bind_address` | `9092` / `127.0.0.1` | Where AudioSocket listens |

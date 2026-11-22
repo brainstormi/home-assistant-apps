@@ -145,7 +145,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
 
         class Handler:
-            async def note(self, text):
+            async def note(self, text, resolve=False):
                 notes.append(text)
                 return True
 
@@ -162,7 +162,7 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(started.wait(), 1)
         await self.bridge.on_command({"action": "note", "call_id": CALL_ID.upper(), "text": "Alarma activada"})
         self.assertEqual(notes, ["Alarma activada"])
-        self.assertEqual(self.events[-1][1], {"call_id": CALL_ID, "stage": "note", "delivered": True})
+        self.assertEqual(self.events[-1][1], {"call_id": CALL_ID, "stage": "note", "delivered": True, "resolve": False})
         await self.bridge.on_command({"action": "hangup", "call_id": CALL_ID})
         await asyncio.gather(task, return_exceptions=True)
         ended = self.events[-1][1]

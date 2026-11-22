@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0
+- **Withdrawn calls stop ringing.** `hangup` on an outbound call that is still ringing now also hangs it up in Asterisk (through the Asterisk app's stdin and a new `bridge-kill` context), so the phone stops in a second or two. New option `asterisk_app`. A failure is logged and the call stays `cancelled`.
+- **Notes that close the notice:** `note` with `resolve: true` interrupts the assistant, says the note, stops asking for confirmation, offers to answer a question and then says goodbye. The call ends with `result: resolved`. Without `resolve`, notes work as before.
+- **Silence:** after `silence_seconds` (8) without speech or a key, the assistant asks again; after `silence_reprompts` (2), it says goodbye and hangs up, with `ended_by: silence`. Also in the local conversation (it replaces its fixed 45 s idle time).
+- **Answering machines (optional):** the new `bridge-notice-amd` context runs `AMD()`; on `MACHINE` the call ends with `result: voicemail`, `amdstatus` and `amdcause`, optionally leaving `voicemail_message` with the fallback voice.
+- New dialplan contexts `bridge-kill` and `bridge-notice-amd` (see DOCS and `examples/extensions.conf`); the outbound call script example has `detect_voicemail` and `voicemail_message`.
+
 ## 0.8.3
 - Documentation: "Setting up from scratch" (what the app creates by itself and what you set up), with a complete dialplan template (`examples/extensions.conf`) and a ready-made outbound call script (`examples/script_outbound_call.yaml`).
 - The example phone numbers in the option descriptions are now fictitious.

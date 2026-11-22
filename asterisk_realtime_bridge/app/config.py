@@ -246,6 +246,12 @@ class Config:
     pins: tuple[Any, ...] = ()
     max_pin_attempts: int = 3
     max_call_seconds: int = 300
+    # Seconds without the caller speaking or pressing a key (after the assistant
+    # has finished) before asking again; after silence_reprompts, hang up. 0 = off.
+    silence_seconds: int = 8
+    silence_reprompts: int = 2
+    # The Asterisk app (slug), to stop a withdrawn outbound call from ringing.
+    asterisk_app: str = "3e533915_asterisk"
     conversation_agent: str = "conversation.home_assistant"
     fallback_agent: str = ""
     # Read-only scope for outbound calls without a PIN (home_status tool):
@@ -430,6 +436,10 @@ def load(path: str | None = None) -> Config:
         pins=pins,
         max_pin_attempts=int(raw.get("max_pin_attempts", defaults.max_pin_attempts)),
         max_call_seconds=int(raw.get("max_call_seconds", defaults.max_call_seconds)),
+        silence_seconds=max(0, int(raw.get("silence_seconds", defaults.silence_seconds))),
+        silence_reprompts=max(0, int(raw.get("silence_reprompts", defaults.silence_reprompts))),
+        asterisk_app=str(raw.get("asterisk_app") if raw.get("asterisk_app") is not None
+                         else defaults.asterisk_app).strip(),
         conversation_agent=text("conversation_agent", defaults.conversation_agent),
         fallback_agent=text("fallback_agent", ""),
         query_include=text("query_include", ""),

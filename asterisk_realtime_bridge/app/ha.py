@@ -78,6 +78,10 @@ class HomeAssistant:
         """Fire an event on the Home Assistant bus (call results for automations)."""
         await self._post(f"events/{event_type}", data)
 
+    async def call_service(self, domain: str, service: str, data: dict[str, Any]) -> None:
+        """Call a Home Assistant action (for example hassio.addon_stdin)."""
+        await self._request("POST", f"services/{domain}/{service}", data)
+
     async def get(self, path: str) -> Any:
         """GET a REST endpoint (for example ``states``)."""
         return await self._request("GET", path)

@@ -16,12 +16,23 @@ Two kinds of UUID therefore carry data (see DOCS.md, "Dialplan"):
 
   ``CC`` is the position (decimal) of ``DIALSTATUS`` in ``DIAL_STATUSES``.
   These connections are reports, not calls: the bridge reads them and hangs up.
+
+* Answering machine detected by ``AMD()`` (context ``bridge-notice-amd``)::
+
+      a3d000CC-<the call id without its first 8 characters>
+
+  ``CC`` is the position of the first word of ``AMDCAUSE`` in ``AMD_CAUSES``.
+  The phone is answered (by the machine): the bridge may leave a short message.
 """
 
 from __future__ import annotations
 
 INBOUND_PREFIX = "ca11e0"
 REPORT_PREFIX = "fa1100"
+VOICEMAIL_PREFIX = "a3d000"
+
+# Same list, with "-", in the dialplan's FIELDNUM() for CUT(AMDCAUSE,-,1).
+AMD_CAUSES = ("INITIALSILENCE", "LONGGREETING", "MAXWORDS", "MAXWORDLENGTH", "TOOLONG", "HUMAN")
 
 # The same list, with "-", goes into the dialplan's FIELDNUM(): position 1 is
 # NOANSWER, 2 BUSY... 0 = a status not in the list.
@@ -64,3 +75,16 @@ def dial_report(call_uuid: str) -> tuple[str, str] | None:
 def result_for(status: str) -> str:
     """Call result for a dial status."""
     return "no_answer" if status in ("NOANSWER", "CANCEL") else "failed"
+
+
+def voicemail_report(call_uuid: str) -> tuple[str, str] | None:
+    """(AMD cause, call id tail) when Asterisk detected an answering machine."""
+    text = call_uuid.lower()
+    if not text.startswith(VOICEMAIL_PREFIX):
+        return None
+    code = text[6:8]
+    if not code.isdigit():
+        return None
+    index = int(code)
+    cause = AMD_CAUSES[index - 1] if 1 <= index <= len(AMD_CAUSES) else "UNKNOWN"
+    return cause, text[8:]

@@ -46,7 +46,6 @@ from .stt import Segmenter, to_wav, upsample
 
 log = logging.getLogger(__name__)
 
-IDLE_S = 45.0
 CONFIRM_KEY_WAIT_S = 2.0
 
 # Intents of Home Assistant's built-in agent that only read.
@@ -75,6 +74,7 @@ TEXT = {
         "questions": "También puede hacerme preguntas.",
         "confirmed": "Aviso confirmado. Gracias.",
         "still_there": "¿Sigue ahí?",
+        "resolved_more": "Si tiene alguna pregunta, dígamela; si no, me despido.",
         "bye": "Hasta luego.",
     },
     "en": {
@@ -90,6 +90,7 @@ TEXT = {
         "questions": "You can also ask me questions.",
         "confirmed": "Notice confirmed. Thank you.",
         "still_there": "Are you still there?",
+        "resolved_more": "If you have any question, tell me; otherwise, goodbye.",
         "bye": "Goodbye.",
     },
 }
@@ -179,6 +180,8 @@ class LocalConversation:
         self.pin_person: str | None = None
         self.confirmed = False
         self.confirmed_by: str | None = None
+        self.resolved = False  # Home Assistant closed the notice with a note (resolve)
+        self.silence_ended = False  # hung up because nobody answered
         self._attempts = 0
         self._keys = ""
         self._key_timer: asyncio.Task | None = None
@@ -241,10 +244,24 @@ class LocalConversation:
         self._gone.set()
         self._events.put_nowait(("gone", None))
 
-    async def note(self, text: str) -> bool:
-        """A message from Home Assistant for the person on the phone (no hang-up)."""
+    async def note(self, text: str, resolve: bool = False) -> bool:
+        """A message from Home Assistant for the person on the phone (no hang-up).
+
+        With ``resolve`` the notice is closed: what is being said is cut, the
+        note is said at once and no confirmation is asked for any more.
+        """
         if self._gone.is_set():
             return False
+        if resolve:
+            log.info("[%s] local: note from Home Assistant: the notice is resolved", self.call_id)
+            self.resolved = True
+            if self._key_timer:
+                self._key_timer.cancel()
+            self._out.clear()
+            await self.say(text)
+            await self.say(self.text["resolved_more"])
+            self._events.put_nowait(("resolved", None))  # restart the silence count
+            return True
         log.info("[%s] local: note from Home Assistant", self.call_id)
         await self.say(text)
         return True
@@ -273,20 +290,27 @@ class LocalConversation:
             await self.say(self.text["questions"])
         else:
             await self.say(self.text["intro_pin"] if self._pin_state == "pin" else self.text["intro"])
-        idle_warned = False
+        limit = self.cfg.silence_seconds or None  # None: wait for ever
+        asked = 0
         while not self._done:
             await self._speaking_done()
             try:
-                kind, value = await asyncio.wait_for(self._events.get(), IDLE_S)
+                kind, value = await asyncio.wait_for(self._events.get(), limit)
             except asyncio.TimeoutError:
-                if idle_warned:
+                if self.resolved or asked >= self.cfg.silence_reprompts:
+                    log.info("[%s] local: no answer for %ss: hanging up", self.call_id, limit)
+                    self.silence_ended = True
                     await self.say(self.text["bye"])
                     await self._speaking_done()
                     return
-                idle_warned = True
+                asked += 1
+                log.info("[%s] local: silence (%ss): asking again (%d/%d)",
+                         self.call_id, limit, asked, self.cfg.silence_reprompts)
                 await self.say(self.text["still_there"])
                 continue
-            idle_warned = False
+            if kind == "resolved":
+                continue
+            asked = 0
             if kind == "gone":
                 return
             if kind == "key":
@@ -296,7 +320,7 @@ class LocalConversation:
         await self._speaking_done()
 
     def _confirm(self, how: str) -> None:
-        if self.outbound is not None and not self.confirmed:
+        if self.outbound is not None and not self.confirmed and not self.resolved:
             self.confirmed, self.confirmed_by = True, how
             log.info("[%s] local: notice confirmed (%s)", self.call_id, how)
 
@@ -304,7 +328,7 @@ class LocalConversation:
     async def _on_key(self, key: str) -> None:
         call = self.outbound
         pin_entry = self._pin_state == "pin" and not self.authed
-        if call is not None and not self.confirmed and key == call.confirm_key:
+        if call is not None and not self.confirmed and not self.resolved and key == call.confirm_key:
             if not pin_entry or (not key.isdigit() and not self._keys):
                 self._confirm("dtmf")
                 await self.say(self.text["confirmed"])
@@ -339,7 +363,7 @@ class LocalConversation:
 
     async def _confirm_after_wait(self, key: str) -> None:
         await asyncio.sleep(CONFIRM_KEY_WAIT_S)
-        if self._keys == key:
+        if self._keys == key and not self.resolved:
             self._keys = ""
             self._confirm("dtmf")
             await self.say(self.text["confirmed"])
@@ -370,7 +394,7 @@ class LocalConversation:
             await self.say(self.text["bye"])
             self._done = True
             return
-        if call is not None and not self.confirmed:
+        if call is not None and not self.confirmed and not self.resolved:
             if call.confirm in ("voice", "voice_or_dtmf") and has_phrase(text, YES[self.lang]):
                 self._confirm("voice")
                 await self.say(self.text["confirmed"])
