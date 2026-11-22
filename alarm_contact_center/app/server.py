@@ -32,6 +32,18 @@ MAX_BODY = 256 * 1024
 EVENT_RE = re.compile(r"^[0-9]{9,11}(\.[0-9]+)?-[a-z0-9]{4,10}$")  # Frigate event id
 
 
+_CLIP_LOCKS: dict[str, threading.Lock] = {}
+_CLIP_LOCKS_GUARD = threading.Lock()
+
+
+def _clip_lock(event_id: str) -> threading.Lock:
+    """One download per clip, however many range requests arrive at once."""
+    with _CLIP_LOCKS_GUARD:
+        if len(_CLIP_LOCKS) > 200:
+            _CLIP_LOCKS.clear()
+        return _CLIP_LOCKS.setdefault(event_id, threading.Lock())
+
+
 class App:
     """API logic, kept apart from the HTTP server so it can be tested."""
 
@@ -274,6 +286,70 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
                 except (BrokenPipeError, ConnectionResetError):
                     pass  # the viewer closed the video
 
+        def _clip(self, event_id: str) -> None:
+            """Clips are cached and served with Range: Frigate builds them on the fly and
+            ignores Range, and Safari on iOS will not play a video without it."""
+            if not EVENT_RE.match(event_id):
+                raise ValueError("Evento no válido.")
+            if app.media is None:
+                self._proxy_frigate(event_id, "clip.mp4")
+                return
+            path = app.media.clip_path(event_id)
+            with _clip_lock(event_id):
+                if not path.exists():
+                    if app.frigate is None:
+                        self._send_json({"error": "Frigate no está configurado."}, HTTPStatus.NOT_FOUND)
+                        return
+                    try:
+                        with app.frigate.open(event_id, "clip.mp4") as resp:
+                            app.media.cache_clip(event_id, resp)
+                    except urllib.error.HTTPError as err:
+                        log.warning("Frigate clip.mp4 for %s: HTTP %s %s", event_id, err.code, err.reason)
+                        self._send_json({"error": "Frigate ya no tiene este vídeo." if err.code == 404 else "Frigate no responde."},
+                                        HTTPStatus.NOT_FOUND if err.code == 404 else HTTPStatus.BAD_GATEWAY)
+                        return
+                    except (urllib.error.URLError, OSError, ValueError) as err:
+                        log.warning("Frigate clip.mp4 for %s: %s", event_id, err)
+                        self._send_json({"error": "Frigate no responde."}, HTTPStatus.BAD_GATEWAY)
+                        return
+            self._send_ranged(path, "video/mp4")
+
+        def _send_ranged(self, path: Path, ctype: str) -> None:
+            size = path.stat().st_size
+            start, end = 0, size - 1
+            status = HTTPStatus.OK
+            m = re.match(r"^bytes=(\d*)-(\d*)$", (self.headers.get("Range") or "").strip())
+            if m and (m.group(1) or m.group(2)):
+                if m.group(1):
+                    start = int(m.group(1))
+                    end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+                else:  # suffix: the last N bytes
+                    start = max(size - int(m.group(2)), 0)
+                if start > end or start >= size:
+                    self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                status = HTTPStatus.PARTIAL_CONTENT
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(end - start + 1))
+            if status == HTTPStatus.PARTIAL_CONTENT:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self.end_headers()
+            try:
+                with path.open("rb") as f:
+                    f.seek(start)
+                    left = end - start + 1
+                    while left > 0 and (chunk := f.read(min(256 * 1024, left))):
+                        self.wfile.write(chunk)
+                        left -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
         def _route(self) -> list[str]:
             path = self.path.split("?", 1)[0]
             return [p for p in path.split("/") if p]
@@ -345,7 +421,7 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
             elif method == "GET" and len(parts) == 2 and parts[0] == "snapshot" and parts[1].endswith(".jpg"):
                 self._snapshot("", parts[1][:-4])
             elif method == "GET" and len(parts) == 2 and parts[0] == "clip" and parts[1].endswith(".mp4"):
-                self._proxy_frigate(parts[1][:-4], "clip.mp4")
+                self._clip(parts[1][:-4])
             elif method == "GET" and parts == ["export"]:
                 self._send_json(app.export_config())
             elif method == "POST" and parts == ["import"]:
