@@ -55,6 +55,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # back in. Empty = no real test (only the registration is watched).
     "trunk_test_number": "",
     "trunk_alert_after_min": 2,
+    # Unstable registration: this many drops within this window alert even when
+    # each drop is too short for trunk_alert_after_min.
+    "flap_alert_count": 3,
+    "flap_window_min": 60,
     "trunk_entity": "binary_sensor.siptrunk_registered",
     "ami_entity": "binary_sensor.ami_connected",
     "frigate_pre_minutes": 5,
@@ -262,6 +266,8 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
         errors["trunk_test"] = "Frecuencia no válida."
     s["trunk_alert_after_min"] = _int_in(s["trunk_alert_after_min"], 1, 60, "trunk_alert_after_min", errors)
     s["trunk_test_hour"] = _int_in(s["trunk_test_hour"], 0, 23, "trunk_test_hour", errors)
+    s["flap_alert_count"] = _int_in(s["flap_alert_count"], 2, 20, "flap_alert_count", errors)
+    s["flap_window_min"] = _int_in(s["flap_window_min"], 10, 1440, "flap_window_min", errors)
     s["trunk_test_number"] = normalize_phone(s["trunk_test_number"])
     if s["trunk_test_number"] and not _PHONE_RE.match(s["trunk_test_number"]):
         errors["trunk_test_number"] = "Número español de 9 cifras (con o sin +34)."

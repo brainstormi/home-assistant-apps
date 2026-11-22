@@ -45,6 +45,7 @@ To let the App know the PIN mode, set the entity that reports it in **Ajustes â†
 Two checks, set up in **Ajustes â†’ Vigilancia de la troncal**:
 
 - **Registration:** the trunk registration and the Asterisk connection entities (by default `binary_sensor.siptrunk_registered` and `binary_sensor.ami_connected`). If either stays off for the configured minutes, everyone with the HA app is told, and again when it comes back.
+- **Stability:** every drop is counted, even a short one. If there are too many in a time window (by default 3 in 60 minutes), the household is told the line is unstable, once per window. The panel shows the drops of the last 24 hours and 7 days.
 - **Real test call:** at the chosen time, the App sends the Bridge `{"action": "trunk_test", "test_id": "...", "number": "<the line's own number>", "timeout": 20}`. The Bridge calls that number through the trunk; the call must come back in on the same line and be dropped before it is answered. It answers with the event `asterisk_realtime_bridge_trunk`: `{"test_id": "...", "result": "ok" | "out_only" | "failed", "dialstatus": "..."}`. `ok`: it went out and came back. `out_only`: the operator took the call but it did not come back. `failed`: it never left (`CHANUNAVAIL`, `CONGESTION`...). A failed test alerts once; the recovery is announced too. While the Bridge does not answer these tests, the panel says so and nothing is alerted.
 
 Tests never run while an alarm, a drill or a test call is using the line: they wait until it is free.

@@ -121,6 +121,11 @@ function trunkTile(s, regValue, regClass) {
   } else if (t && t.next_test) {
     detail = `Primera prueba: ${fmtTime(t.next_test)}`;
   }
+  const reg = t && t.stability && t.stability.trunk;
+  if (reg && reg.drops_24h) {
+    detail += ` · ${reg.drops_24h} caída(s) del registro en 24 h`;
+    if (cls === "ok" && reg.drops_24h >= 3) cls = "warn";
+  }
   if (t && Object.keys(t.down_since || {}).length) { value = "Caída"; cls = "bad"; }
   return el("div", { class: "tile" },
     el("div", { class: "label" }, el("span", { class: "dot " + cls, "aria-hidden": "true" }), "Línea telefónica"),
@@ -264,6 +269,14 @@ function trunkSummary(t) {
   if (t.last_test) parts.push(`Última prueba: ${fmtTime(t.last_test.t)} · ${t.last_test.text}`);
   else parts.push("Todavía no se ha hecho ninguna prueba.");
   if (t.next_test) parts.push(`Próxima: ${fmtTime(t.next_test)}`);
+  const st = t.stability || {};
+  for (const [key, label] of [["trunk", "Registro"], ["ami", "Asterisk"]]) {
+    const x = st[key];
+    if (!x) continue;
+    parts.push(x.drops_7d
+      ? `${label}: ${x.drops_24h} caída(s) en 24 h (${x.down_minutes_24h} min), ${x.drops_7d} en 7 días`
+      : `${label}: sin caídas en 7 días`);
+  }
   if (t.last_test && t.last_test.result === "timeout" && !t.bridge_answers) parts.push("El Bridge no responde a la prueba: necesita una versión con el comando trunk_test.");
   return parts.join(" · ");
 }
@@ -539,6 +552,8 @@ function showSettings(draft = null, errors = {}) {
   const trunkNumber = el("input", { id: "trunk_test_number", type: "tel", value: st.trunk_test_number, inputmode: "tel", autocomplete: "off" });
   const trunkEntity = el("input", { id: "trunk_entity", type: "text", value: st.trunk_entity });
   const amiEntity = el("input", { id: "ami_entity", type: "text", value: st.ami_entity });
+  const flapCount = num("flap_alert_count", st.flap_alert_count, 2, 20);
+  const flapWindow = num("flap_window_min", st.flap_window_min, 10, 1440);
   const trunkInfo = el("div", { class: "small muted" }, trunkSummary(STATE.trunk));
   const trunkBtn = el("button", { class: "btn", type: "button", onclick: async () => {
     trunkBtn.disabled = true; trunkInfo.textContent = "Probando… (hasta un minuto y medio)";
@@ -576,6 +591,7 @@ function showSettings(draft = null, errors = {}) {
       trunk_test: trunkTest.value, trunk_alert_after_min: Number(trunkAlert.value),
       trunk_test_hour: Number(trunkHour.value), trunk_test_number: trunkNumber.value,
       trunk_entity: trunkEntity.value, ami_entity: amiEntity.value,
+      flap_alert_count: Number(flapCount.value), flap_window_min: Number(flapWindow.value),
       frigate_pre_minutes: Number(pre.value), media_retention_days: Number(retention.value),
       send_photos_external: photos.checked,
       incident_entities: entities.value.split(/[\s,]+/).filter(Boolean),
@@ -634,6 +650,8 @@ function showSettings(draft = null, errors = {}) {
         field("trunk_test", "Prueba real de llamada", trunkTest, null, errors.trunk_test),
         field("trunk_test_hour", "Hora de la prueba", trunkHour, "Cada 6 horas: a esta hora y cada 6 h desde ella.", errors.trunk_test_hour),
         field("trunk_alert_after_min", "Avisar si el registro cae más de (min)", trunkAlert, null, errors.trunk_alert_after_min),
+        field("flap_alert_count", "Avisar si se cae este número de veces…", flapCount, "Aunque cada corte sea breve: registro inestable.", errors.flap_alert_count),
+        field("flap_window_min", "…en este tiempo (min)", flapWindow, null, errors.flap_window_min),
         field("trunk_entity", "Entidad del registro de la troncal", trunkEntity, null, errors.trunk_entity),
         field("ami_entity", "Entidad de la conexión con Asterisk", amiEntity, null, errors.ami_entity)),
       el("div", { class: "actions", style: "justify-content:flex-start;align-items:center" }, trunkBtn, trunkInfo)),

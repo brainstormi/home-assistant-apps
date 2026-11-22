@@ -44,6 +44,7 @@ log = logging.getLogger(__name__)
 TRUNK_EVENT = "asterisk_realtime_bridge_trunk"
 TEST_TIMEOUT_S = 90
 POSTPONE_S = 600  # the line is busy with an alarm, a drill or a test call
+KEEP_DROPS_S = 7 * 24 * 3600
 OK_RESULTS = ("ok", "out_only")
 RESULT_TEXT = {
     "ok": "La llamada sale y vuelve a entrar",
@@ -105,7 +106,7 @@ class TrunkMonitor:
                 return data
         except (OSError, json.JSONDecodeError):
             pass
-        return {"last_test": None, "bridge_answers": False, "test_failing": False, "entities": {}}
+        return {"last_test": None, "bridge_answers": False, "test_failing": False, "drops": [], "flap_alerted": {}}
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,7 +126,59 @@ class TrunkMonitor:
             "number_set": bool(settings["trunk_test_number"]),
             "next_test": nxt.isoformat(timespec="minutes") if nxt and settings["trunk_test_number"] else None,
             "down_since": down,
+            "stability": self.stability(),
         }
+
+    # ------------------------------------------------------------ stability
+    def stability(self, now: float | None = None) -> dict[str, dict[str, Any]]:
+        """Drops per watched entity: last 24 h, last 7 days, minutes down in 24 h, last drop."""
+        now = time.time() if now is None else now
+        settings = self.store.settings()
+        out = {}
+        for key, eid in (("trunk", settings["trunk_entity"]), ("ami", settings["ami_entity"])):
+            drops = [d for d in self.state.get("drops", []) if d.get("entity") == eid]
+            day = [d for d in drops if d["down"] >= now - 86400]
+            down_s = sum(min(d.get("up") or now, now) - max(d["down"], now - 86400)
+                         for d in drops if (d.get("up") or now) >= now - 86400)
+            last = max((d["down"] for d in drops), default=None)
+            out[key] = {
+                "entity_id": eid,
+                "drops_24h": len(day),
+                "drops_7d": len(drops),
+                "down_minutes_24h": round(max(0.0, down_s) / 60, 1),
+                "last_drop": dt.datetime.fromtimestamp(last).astimezone().isoformat(timespec="seconds") if last else None,
+            }
+        return out
+
+    def _record_drop(self, entity_id: str, now: float) -> None:
+        drops = [d for d in self.state.get("drops", []) if d["down"] >= now - KEEP_DROPS_S]
+        drops.append({"entity": entity_id, "down": now, "up": None})
+        self.state["drops"] = drops
+        self._save()
+
+    def _record_up(self, entity_id: str, now: float) -> None:
+        for d in reversed(self.state.get("drops", [])):
+            if d.get("entity") == entity_id and not d.get("up"):
+                d["up"] = now
+                break
+        self._save()
+
+    async def _check_flapping(self, entity_id: str, now: float) -> None:
+        settings = self.store.settings()
+        window = settings["flap_window_min"] * 60
+        recent = [d for d in self.state.get("drops", []) if d.get("entity") == entity_id and d["down"] >= now - window]
+        alerted = self.state.setdefault("flap_alerted", {}).get(entity_id, 0)
+        if len(recent) < settings["flap_alert_count"] or alerted >= now - window:
+            return
+        self.state["flap_alerted"][entity_id] = now
+        self._save()
+        span = settings["flap_window_min"]
+        span_text = f"{span} min" if span < 120 else f"{span // 60} h"
+        what = self._label(entity_id)
+        self._log("failed", f"Inestable: {what}", f"{len(recent)} caídas en {span_text}")
+        await self._tell_household("Línea telefónica inestable",
+                                   f"Se ha caído {what} {len(recent)} veces en {span_text}. "
+                                   "Si salta la alarma en uno de esos cortes, la llamada puede fallar.")
 
     # --------------------------------------------------------- notifications
     async def _tell_household(self, title: str, message: str) -> None:
@@ -160,6 +213,7 @@ class TrunkMonitor:
         if state == "on":
             down = self._down.pop(entity_id, None)
             if down:
+                self._record_up(entity_id, time.time())
                 if down["task"] and not down["task"].done():
                     down["task"].cancel()
                 if down["alerted"]:
@@ -172,6 +226,8 @@ class TrunkMonitor:
             return
         info = {"since": now_iso(), "since_ts": time.time(), "alerted": False, "task": None}
         self._down[entity_id] = info
+        self._record_drop(entity_id, info["since_ts"])
+        await self._check_flapping(entity_id, info["since_ts"])
         info["task"] = asyncio.get_running_loop().create_task(self._alert_later(entity_id, settings["trunk_alert_after_min"]))
 
     async def _alert_later(self, entity_id: str, minutes: int) -> None:
