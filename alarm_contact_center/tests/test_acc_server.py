@@ -221,11 +221,14 @@ class MediaRouteTests(unittest.TestCase):
         self.assertEqual((status, body, headers["Content-Type"]), (200, b"live-jpg", "image/jpeg"))
         self.assertEqual(self.get(f"/api/snapshot/{ev}.jpg")[1], b"live-jpg")
 
-    def test_clip_proxy_and_range(self):
+    def test_clip_cached_and_ranged(self):
         ev = "1795354401.831865-vqtljq"
-        self.assertEqual(self.get(f"/api/clip/{ev}.mp4")[1], b"video")
         status, body, headers = self.get(f"/api/clip/{ev}.mp4", {"Range": "bytes=0-1"})
         self.assertEqual((status, body, headers["Content-Range"]), (206, b"vi", "bytes 0-1/5"))
+        self.assertEqual(self.get(f"/api/clip/{ev}.mp4")[1], b"video")
+        self.assertEqual(self.get(f"/api/clip/{ev}.mp4", {"Range": "bytes=-3"})[1], b"deo")
+        self.assertEqual(self.get(f"/api/clip/{ev}.mp4", {"Range": "bytes=9-"})[0], 416)
+        self.assertEqual(len(self.ha.opened), 1)  # downloaded once
         self.assertEqual(self.get("/api/clip/1795354401.8-gone00.mp4")[0], 404)
 
     def test_bad_ids_rejected(self):

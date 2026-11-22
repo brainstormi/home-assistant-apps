@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3
+
+- Clips are downloaded once, cached for two days and served with Range, so they play on iPhone (Frigate builds clips on the fly and ignores Range).
+
 ## 0.5.2
 
 - Photos and clips come straight from Frigate's API, with the address taken from the Frigate integration (or set in Ajustes). The integration's notification proxy fails for requests coming through the Supervisor.
