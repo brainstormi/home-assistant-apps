@@ -1,0 +1,103 @@
+name: Asterisk Realtime Bridge
+version: "0.8.3"
+slug: asterisk_realtime_bridge
+description: Talk to Home Assistant by phone (Asterisk AudioSocket + OpenAI Realtime API) with barge-in.
+url: https://github.com/brainstormi/home-assistant-apps/tree/main/asterisk_realtime_bridge
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+# Host networking lets the AudioSocket server listen on 127.0.0.1 only: reachable
+# by Asterisk when it also runs on the host network (e.g. as another add-on),
+# but not by the rest of the LAN or the internet.
+host_network: true
+homeassistant_api: true
+# Home Assistant sends outbound-call commands with hassio.addon_stdin: no port
+# is needed for that.
+stdin: true
+options:
+  openai_api_key: ""
+  model: gpt-realtime-2.1
+  voice: marin
+  language: en
+  assistant_name: Assistant
+  accent: ""
+  prompt: |
+    You are {assistant_name}, the voice assistant of this home. You are speaking on the phone, so keep your replies short and natural: no lists, no long explanations.
+
+    Language: always speak {language_name} (language code "{language}"), starting with your very first words, unless the caller clearly speaks another language.
+    {accent_line}
+
+    Security:
+    {pin_rules}
+    - For locks, alarms, doors, gates and garage doors always ask for explicit confirmation ("do you really want me to open it?") before acting.
+
+    Home:
+    - For any action or question about the home, use the home tool with ONE clear request in natural language, for example "turn on the living room light" or "is the garage door open?". Write the request in {language_name} (language code "{language}"), because that is the language Home Assistant understands.
+    - Tell the caller the result in your own words. If the tool returns an error, say so honestly. Never invent states or actions.
+
+    Call:
+    - If the caller says goodbye or needs nothing else, say a brief goodbye and call the hang_up tool.
+    - If you are interrupted, stop talking and listen.
+  pin_enabled: true
+  pin_mode: global
+  pin: ""
+  pins: []
+  max_pin_attempts: 3
+  max_call_seconds: 300
+  max_concurrent_calls: 1
+  conversation_agent: conversation.home_assistant
+  fallback_agent: ""
+  query_include: ""
+  query_exclude: ""
+  fallback_tts: ""
+  fallback_tts_voice: ""
+  openai_check_minutes: 15
+  local_conversation: false
+  local_stt: stt.faster_whisper
+  vad: server_vad
+  vad_threshold: 0.5
+  vad_silence_ms: 500
+  noise_reduction: near_field
+  port: 9092
+  bind_address: 127.0.0.1
+  log_level: info
+  log_transcripts: false
+schema:
+  openai_api_key: password
+  model: str
+  voice: str
+  language: str
+  assistant_name: str
+  accent: str?
+  prompt: str?
+  pin_enabled: bool
+  pin_mode: list(global|individual)
+  pin: password?
+  pins:
+    - person: match(^person\.[a-z0-9_]+$)?
+      pin: password
+      numbers: str?
+      name: str?
+  max_pin_attempts: int(1,10)
+  max_call_seconds: int(30,1800)
+  max_concurrent_calls: int(1,3)
+  conversation_agent: str
+  fallback_agent: str?
+  query_include: str?
+  query_exclude: str?
+  fallback_tts: str?
+  fallback_tts_voice: str?
+  openai_check_minutes: int(0,1440)
+  local_conversation: bool
+  local_stt: str?
+  vad: list(server_vad|semantic_vad)
+  vad_threshold: float(0.1,0.95)
+  vad_silence_ms: int(200,2000)
+  noise_reduction: list(near_field|far_field|off)
+  port: port
+  bind_address: str
+  extra_instructions: str?
+  log_level: list(debug|info|warning|error)
+  log_transcripts: bool

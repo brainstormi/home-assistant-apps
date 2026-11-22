@@ -1,0 +1,110 @@
+configuration:
+  openai_api_key:
+    name: Clave API de OpenAI
+    description: Crea una clave solo para esto, en un proyecto con límite de gasto.
+  model:
+    name: Modelo Realtime
+    description: gpt-realtime-2.1 (por defecto), gpt-realtime-2.1-mini (más barato y rápido, menos capaz) o gpt-realtime-2. GPT-Live aún no está soportado.
+  voice:
+    name: Voz
+    description: Por ejemplo marin, cedar, alloy, coral, verse...
+  language:
+    name: Idioma
+    description: Código de idioma del asistente, de los agentes de conversación de Home Assistant y de la transcripción (en, es, de...).
+  assistant_name:
+    name: Nombre del asistente
+    description: Cómo se presenta el asistente al descolgar.
+  accent:
+    name: Acento y dialecto (opcional)
+    description: Orienta la voz, p. ej. "español de España (castellano), acento peninsular estándar". El resultado depende del modelo y de la voz; prueba también otras voces.
+  prompt:
+    name: Prompt del asistente (plantilla)
+    description: "Cómo se presenta y se comporta el asistente. Marcadores: {assistant_name}, {language}, {language_name}, {accent_line} y {pin_rules} (estos dos en una línea propia). Déjalo vacío para usar la plantilla incorporada. Para varias líneas es más cómodo Editar en YAML; un \\n literal también sirve como salto de línea."
+  pin_enabled:
+    name: Exigir PIN
+    description: Si lo desactivas, cualquier llamada que llegue al puente puede controlar la casa (la única barrera sería tu dialplan de Asterisk).
+  pin_mode:
+    name: Modo de PIN
+    description: "global: un único PIN (PIN de seguridad) para las llamadas Management y las entrantes; los PINs personales se ignoran. individual: un PIN por persona de Home Assistant (PINs personales); el PIN global se ignora. Mientras el modo elegido esté incompleto, las llamadas Management son solo de consulta. Reinicia el app tras cambiarlo y revisa sensor.asterisk_realtime_bridge_pin."
+  pin:
+    name: PIN de seguridad
+    description: Solo en modo global (en modo individual se ignora). Solo dígitos. Se puede decir en voz alta o teclear en el móvil.
+  pins:
+    name: PINs personales
+    description: "Solo en modo individual (en modo global se ignoran). Una entrada por persona de Home Assistant. Reinicia el app tras guardar; sensor.asterisk_realtime_bridge_pin mostrará quién tiene PIN y cualquier problema."
+    fields:
+      person:
+        name: Persona
+        description: "El entity_id de la persona, p. ej. person.sonia (en minúsculas). Cópialo de Ajustes > Personas, o de people_without_pin en sensor.asterisk_realtime_bridge_pin."
+      pin:
+        name: PIN
+        description: "Al menos 6 cifras, no trivial (111111, 123456, 121212...) y distinto para cada persona. Un PIN no válido deja el modo incompleto: las llamadas Management pasan a solo consulta."
+      numbers:
+        name: Teléfonos
+        description: "Opcional. Los teléfonos de esta persona, separados por comas (600111222, +34 600 333 444). Una llamada entrante desde uno de ellos pide el PIN de esta persona; los demás números son solo de consulta. El número solo decide qué PIN se pide, nunca se lo salta. El número también debe estar permitido en el dialplan de Asterisk."
+      name:
+        name: Etiqueta
+        description: "Opcional. Un nombre para tu referencia; no se usa para identificar a la persona."
+  max_pin_attempts:
+    name: Intentos de PIN
+    description: Tras estos fallos se cuelga la llamada.
+  max_call_seconds:
+    name: Duración máxima de llamada (s)
+    description: Corta la llamada pasado este tiempo para limitar el gasto.
+  max_concurrent_calls:
+    name: Llamadas simultáneas
+    description: Máximo de llamadas a la vez.
+  conversation_agent:
+    name: Agente de conversación de HA
+    description: Agente que ejecuta las órdenes. Por defecto el Assist integrado (sin LLM), que solo toca entidades expuestas.
+  fallback_agent:
+    name: Agente de respaldo (opcional)
+    description: Se usa si el agente principal no entiende la orden, por ejemplo conversation.openai_conversation. Añade latencia y coste.
+  query_include:
+    name: Alcance de consulta sin PIN (etiquetas)
+    description: "Lo que una llamada saliente puede contar antes de verificar un PIN (siempre en QueryOnly). Etiquetas separadas por comas, por nombre o id. VACÍO = las mismas entidades expuestas a Assist en Home Assistant (lo que ya controlas por voz). Fuera de este alcance no se puede leer nada, y sin PIN nunca se puede cambiar nada."
+  query_exclude:
+    name: Excluir de ese alcance
+    description: "Etiquetas, ids de entidad (light.cocina) o nombres de dispositivo, separados por comas, que se quitan del alcance de consulta. Vacío = no se excluye nada."
+  fallback_tts:
+    name: Voz de respaldo si falla OpenAI (entidad TTS)
+    description: "Una entidad TTS de Home Assistant, por ejemplo tts.piper. Si OpenAI no está disponible (caída, clave inválida, sin saldo), los avisos salientes se leen con ella y se confirman con una tecla, y las llamadas entrantes oyen que el asistente no está disponible. Vacío = sin respaldo."
+  fallback_tts_voice:
+    name: Voz de respaldo (opcional)
+    description: "Una voz de ese motor TTS, por ejemplo es_ES-davefx-medium para Piper. Vacío = la voz por defecto del motor."
+  openai_check_minutes:
+    name: Comprobar OpenAI cada (minutos)
+    description: "Cada cuánto comprueba el bridge que OpenAI funciona (abre y cierra una sesión, sin audio ni tokens) y publica binary_sensor.asterisk_realtime_bridge_openai. 0 = solo al arrancar. Las llamadas reales también lo actualizan."
+  local_conversation:
+    name: Conversación local si falla OpenAI
+    description: "En vez de solo leer avisos, conversar con Home Assistant en local cuando OpenAI no está disponible: voz a texto (local_stt, p. ej. Whisper), el Assist propio de Home Assistant y la voz de respaldo. Más lenta y literal; el PIN solo por teclado. Necesita fallback_tts. Desactivada = solo avisos y el mensaje de no disponible."
+  local_stt:
+    name: Voz a texto para la conversación local
+    description: "Una entidad STT de Home Assistant, por ejemplo stt.faster_whisper. Pon su idioma en el tuyo (en Whisper ayudan mucho small-int8 y un texto inicial con las palabras de tu casa)."
+  vad:
+    name: Detección de turnos
+    description: server_vad (por silencio) o semantic_vad (por significado).
+  vad_threshold:
+    name: Umbral de voz (server_vad)
+    description: Súbelo si el asistente se interrumpe solo por ruido o eco.
+  vad_silence_ms:
+    name: Silencio para terminar turno (ms)
+    description: Cuánto silencio indica que quien llama ha terminado de hablar.
+  noise_reduction:
+    name: Reducción de ruido
+    description: near_field para llamadas de teléfono normales.
+  port:
+    name: Puerto AudioSocket
+    description: Puerto al que se conecta Asterisk.
+  bind_address:
+    name: Dirección de escucha de AudioSocket
+    description: Déjala en 127.0.0.1 si Asterisk corre en el mismo equipo. AudioSocket no tiene autenticación; si lo expones, restringe el acceso con un cortafuegos.
+  extra_instructions:
+    name: Instrucciones adicionales
+    description: Texto que se añade a las instrucciones por defecto (por ejemplo, cómo se llaman tus estancias y dispositivos).
+  log_level:
+    name: Nivel de registro
+    description: debug muestra más detalle.
+  log_transcripts:
+    name: Registrar transcripciones
+    description: Escribe en el log lo que se dice. Es información privada; actívalo solo para depurar.
