@@ -38,6 +38,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Same idea for external contacts (Telegram, email). HA app notifications to
     # the household are always immediate.
     "external_notify_delay": 30,
+    # Voicemail (Bridge 0.9.1+, OpenAI engine): the assistant recognises it, leaves
+    # voicemail_message after the beep and the call counts as "did not confirm".
+    "detect_voicemail": True,
+    "voicemail_message": "Hola {nombre}. Ha saltado la alarma en casa: {sensor}, a las {hora}. Por favor, revisa tus notificaciones o llama a casa.",
     # Full passes over the list; the chain is circular (after the last contact it
     # goes back to the first). 0 = no limit: until someone confirms or the alarm
     # is disarmed, capped by max_chain_minutes.
@@ -237,6 +241,10 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
     elif len(s["message"]) > 600:
         errors["message"] = "Máximo 600 caracteres."
     s["confirm_text"] = str(s["confirm_text"] or "").strip()[:300]
+    s["detect_voicemail"] = bool(s["detect_voicemail"])
+    s["voicemail_message"] = str(s["voicemail_message"] or "").strip()
+    if len(s["voicemail_message"]) > 300:
+        errors["voicemail_message"] = "Máximo 300 caracteres: tiene que caber antes de que el buzón corte."
 
     s["call_delay"] = _int_in(s["call_delay"], 0, 600, "call_delay", errors)
     s["external_notify_delay"] = _int_in(s["external_notify_delay"], 0, 600, "external_notify_delay", errors)

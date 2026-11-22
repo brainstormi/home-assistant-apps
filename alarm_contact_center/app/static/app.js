@@ -484,6 +484,8 @@ function showSettings(draft = null, errors = {}) {
 
   const message = el("textarea", { id: "message", rows: "3" }, st.message);
   const confirmText = el("input", { id: "confirm_text", type: "text", value: st.confirm_text });
+  const detectVm = el("input", { id: "detect_voicemail", type: "checkbox", checked: st.detect_voicemail });
+  const vmMessage = el("textarea", { id: "voicemail_message", rows: "2" }, st.voicemail_message);
   const callDelay = num("call_delay", st.call_delay, 0, 600);
   const externalDelay = num("external_notify_delay", st.external_notify_delay, 0, 600);
   const rounds = el("select", { id: "rounds" },
@@ -520,6 +522,7 @@ function showSettings(draft = null, errors = {}) {
   function collect() {
     return {
       message: message.value, confirm_text: confirmText.value,
+      detect_voicemail: detectVm.checked, voicemail_message: vmMessage.value,
       call_delay: Number(callDelay.value), external_notify_delay: Number(externalDelay.value),
       rounds: Number(rounds.value), max_chain_minutes: Number(maxChain.value),
       answer_timeout: Number(answer.value), round_pause_min: Number(pause.value),
@@ -552,6 +555,12 @@ function showSettings(draft = null, errors = {}) {
         ["{nombre}", "{sensor}", "{zona}", "{hora}", "{atendido}"].map((v) => el("code", { class: "var" }, v))),
       el("div", {}, el("div", { class: "small muted", style: "margin-bottom:4px" }, "Vista previa"), preview),
       field("confirm_text", "Texto al pedir confirmación", confirmText, null, errors.confirm_text)),
+
+    el("section", { class: "card", "aria-labelledby": "vm-h" },
+      el("h2", { id: "vm-h", style: "font-size:17px" }, "Buzón de voz"),
+      el("label", { class: "check" }, detectVm, "Detectar el buzón de voz"),
+      el("span", { class: "small muted" }, "El asistente reconoce el saludo grabado o el pitido, no lee el aviso, deja el mensaje de abajo tras el pitido y pasa al siguiente contacto. Un buzón nunca cuenta como confirmación. Solo con OpenAI disponible."),
+      field("voicemail_message", "Mensaje para el buzón", vmMessage, "Corto: mismas variables que el aviso, salvo {atendido}.", errors.voicemail_message)),
 
     el("section", { class: "card", "aria-labelledby": "espera-h" },
       el("h2", { id: "espera-h", style: "font-size:17px" }, "Antes de avisar"),
@@ -640,7 +649,7 @@ async function importConfig(ev) {
 const KIND_LABEL = { alarm: "Alarma", drill: "Simulacro", test: "Prueba" };
 const KIND_COLOR = {
   triggered: "bad", trunk_down: "bad", error: "bad", confirmed: "ok", acknowledged: "ok", disarmed: "ok",
-  call: "accent", wait: "", profile: "warn", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
+  call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
 };
 
 function fmtTime(iso) {
