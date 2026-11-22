@@ -312,7 +312,7 @@ class Engine:
             existing.update(data)
             for e in inc.events:
                 if (e.get("media") or {}).get("review_id") == alert.review_id:
-                    e["detail"] = self._person_detail(alert, before, "después del cierre" in e["detail"])
+                    e["detail"] = self._person_detail(alert, before, AFTER_CLOSE in e["detail"])
                     e["media"]["event_id"] = alert.event_id
             inc.changed()
         else:
@@ -325,7 +325,7 @@ class Engine:
 
     @staticmethod
     def _person_detail(alert: PersonAlert, before: bool, after: bool = False) -> str:
-        parts = ["Alerta de Frigate"]
+        parts = ["Vista por la cámara"]
         if before:
             parts.append("antes del disparo")
         if after:

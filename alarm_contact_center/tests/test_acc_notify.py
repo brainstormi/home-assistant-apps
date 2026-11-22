@@ -239,7 +239,19 @@ class NumberingAndVideoTests(unittest.IsolatedAsyncioTestCase):
         text = telegram_text(inc)
         self.assertIn("Persona en Portal 📷1", text)
         self.assertIn("Persona en Patio 📷2", text)
-        self.assertEqual(media_caption(inc, inc["events"][2], "🎬"), "🎬2 · Persona en Patio · 16:06:00")
+        self.assertEqual(media_caption(inc, inc["events"][2], "🎬"), "🎬2 Vídeo · Persona en Patio · 16:06:00")
+        self.assertEqual(media_caption(inc, inc["events"][0], "📷"), "📷1 Foto · Persona en Portal · 16:04:57 · antes del disparo")
+
+    def test_attachment_names_and_no_frigate_wording(self):
+        from app.notify import photo_filename
+
+        e = {"t": "2026-11-22T17:27:22+01:00", "kind": "person", "text": "Persona en Entrada", "detail": "Alerta de Frigate · antes del disparo",
+             "media": {"review_id": "r1"}}
+        inc = {"kind": "alarm", "sensor": "Puerta", "started": "2026-11-22T17:27:54+01:00", "status": "calling", "phase": "calling", "events": [e]}
+        self.assertEqual(photo_filename(inc, e), "Foto 1 - Persona en Entrada 17-27-22.jpg")
+        self.assertNotIn("Frigate", telegram_text(inc))
+        self.assertNotIn("Frigate", "".join(email_parts(inc, final=True)))
+        self.assertIn("Vista por la cámara", telegram_text(inc))
 
     async def test_video_sent_once_the_event_is_over(self):
         tmp = tempfile.TemporaryDirectory()
@@ -280,7 +292,8 @@ class NumberingAndVideoTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(5):
             await asyncio.sleep(0)
             await notifier.drain()
-        self.assertEqual(tg.videos, [("1111", "🎬1 · Persona en Portal · " + tg.photos[0][1].split(" · ")[2] + " · Alerta de Frigate · antes del disparo", 9)])
+        self.assertEqual(tg.videos, [("1111", "🎬1 Vídeo · Persona en Portal · " + tg.photos[0][1].split(" · ")[2] + " · Vista por la cámara · antes del disparo", 9)])
+        self.assertTrue(tg.photos[0][1].startswith("📷1 Foto · Persona en Portal"))
         self.assertGreaterEqual(frigate.calls, 3)
         self.assertTrue(media.clip_path(f"{now - 29:.6f}-det001").exists())
 
@@ -308,7 +321,7 @@ class ResendTests(unittest.IsolatedAsyncioTestCase):
         result = await notifier.resend(data, [c["id"]])
         self.assertEqual(result, {"sent": ["Telegram a Pablo", "correo a Pablo"], "errors": []})
         self.assertIn("📷1", tg.sent[0][1])
-        self.assertEqual(tg.photos[0][1], "📷1 · Persona en Portal · 17:27:22")
+        self.assertEqual(tg.photos[0][1], "📷1 Foto · Persona en Portal · 17:27:22")
         self.assertEqual(mails, [("p@example.com", "Reenvío · Informe final: SIMULACRO de alarma en casa · Puerta (22/11/2026 17:27)", 1)])
         with self.assertRaises(RuntimeError):
             await notifier.resend(data, [])
