@@ -6,8 +6,6 @@ url: https://github.com/brainstormi/home-assistant-apps/tree/main/asterisk_realt
 arch:
   - amd64
   - aarch64
-startup: application
-boot: auto
 # Host networking lets the AudioSocket server listen on 127.0.0.1 only: reachable
 # by Asterisk when it also runs on the host network (e.g. as another add-on),
 # but not by the rest of the LAN or the internet.
