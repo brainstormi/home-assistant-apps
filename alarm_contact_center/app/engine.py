@@ -235,6 +235,31 @@ class Incident:
         self.wake = asyncio.Event()  # the close time changed
         self.on_change: Any = None  # set by the engine: called after every change
 
+    # ------------------------------------------------------- persistence
+    SNAPSHOT_FIELDS = ("id", "kind", "sensor", "sensor_entity", "started", "status", "acknowledged_by", "ack_via",
+                       "acknowledged_at", "events", "persons", "line_down", "simulate_line_down", "next_index",
+                       "burst_seq", "not_answered", "record_until", "disarmed_at", "closed", "stop_reason",
+                       "calling_number", "current_contact", "requested_profile")
+
+    def snapshot(self) -> dict[str, Any]:
+        """Everything needed to carry on after the App restarts."""
+        data = {k: copy.deepcopy(getattr(self, k)) for k in self.SNAPSHOT_FIELDS}
+        data["only_contacts"] = sorted(self.only_contacts) if self.only_contacts is not None else None
+        data["chain_done"] = bool(self.chain_done or self.task is None or self.task.done())
+        data["saved_at"] = time.time()
+        return data
+
+    @classmethod
+    def from_snapshot(cls, data: dict[str, Any]) -> "Incident":
+        inc = cls(str(data["kind"]), str(data.get("sensor") or ""), str(data.get("sensor_entity") or ""))
+        for k in cls.SNAPSHOT_FIELDS:
+            if k in data:
+                setattr(inc, k, copy.deepcopy(data[k]))
+        only = data.get("only_contacts")
+        inc.only_contacts = set(only) if only is not None else None
+        inc.chain_done = bool(data.get("chain_done", True))
+        return inc
+
     def add(self, kind: str, text: str, detail: str = "", t: str | None = None, media: dict[str, Any] | None = None) -> dict[str, Any]:
         entry: dict[str, Any] = {"t": t or now_iso(), "kind": kind, "text": text, "detail": detail}
         if media:
@@ -296,6 +321,9 @@ class Engine:
         self.frigate = FrigateWatcher()
         self.media = media  # MediaStore for snapshot copies (None: no copies)
         self.listeners: list[Any] = []  # called with the Incident after every change
+        self.state_path: Path | None = None  # where the open incident is kept across restarts
+        self.restored: Incident | None = None  # open incident found at start, not reconciled yet
+        self.restored_saved_at = 0.0
         self.line_down_hint: Any = lambda: False  # set by the trunk monitor: registration lost
         self.telegram_alert: Any = None  # async (inc, contact): Telegram message instead of a call
 
@@ -417,6 +445,9 @@ class Engine:
         """Feed every state of the alarm_control_panel entity."""
         previous, self.alarm_state = self.alarm_state, state
         attributes = attributes or {}
+        if restarted and self.restored is not None:
+            await self._reconcile(state)
+            return
         if state == TRIGGERED_STATE and previous != TRIGGERED_STATE:
             if self.current and self.current.kind == "alarm" and self._active(self.current):
                 return
@@ -580,6 +611,7 @@ class Engine:
         self._changed(inc)
 
     def _changed(self, inc: Incident) -> None:
+        self.persist(inc)
         for listener in list(self.listeners):
             try:
                 listener(inc)
@@ -843,6 +875,84 @@ class Engine:
             if attempt < contact["attempts"] and await self._wait(inc, contact["retry_wait"]):
                 return "stopped"
         return "not_confirmed"
+
+    # ---------------------------------------------------- restarts
+    def persist(self, inc: Incident | None = None) -> None:
+        """Keep the open incident on disk (every change, and a heartbeat): if the App
+        restarts, it carries on instead of starting over or getting lost."""
+        inc = inc or self.current
+        if self.state_path is None or inc is None or inc.kind not in CHAIN_KINDS:
+            return
+        if inc is not self.current:
+            return
+        try:
+            if inc.closed:
+                self.state_path.unlink(missing_ok=True)
+                return
+            tmp = self.state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(inc.snapshot(), ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.state_path)
+        except OSError as err:
+            log.warning("Could not keep the open incident: %s", err)
+
+    def restore(self) -> Incident | None:
+        """At start: the incident that was open when the App stopped, if any."""
+        if self.state_path is None:
+            return None
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            inc = Incident.from_snapshot(data)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, KeyError, TypeError) as err:
+            log.warning("Ignoring the saved incident: %s", err)
+            return None
+        settings = self.store.settings()
+        too_old = time.time() - inc.started > (settings["max_open_minutes"] + settings["post_minutes"] + 30) * 60
+        if inc.closed or inc.kind not in CHAIN_KINDS or too_old:
+            with contextlib.suppress(OSError):
+                self.state_path.unlink()
+            return None
+        self.restored, self.restored_saved_at = inc, float(data.get("saved_at") or time.time())
+        self.current = inc
+        inc.on_change = self._changed
+        log.info("[%s] open incident restored after a restart", inc.id)
+        return inc
+
+    async def reconcile_restored(self, alarm_state: str) -> None:
+        if self.restored is not None:
+            self.alarm_state = alarm_state
+            await self._reconcile(alarm_state)
+
+    async def _reconcile(self, state: str) -> None:
+        """Carry on with the restored incident according to where the alarm is now."""
+        inc, self.restored = self.restored, None
+        if inc is None:
+            return
+        self.current = inc
+        inc.on_change = self._changed
+        now = time.time()
+        inc.add("restart", f"La App se ha reiniciado: sin registro entre las {hhmm(self.restored_saved_at)} y las {hhmm(now)}")
+        if inc.calling_number and not inc.chain_done:
+            inc.add("after", f"La llamada a {inc.current_contact} se interrumpió con el reinicio")
+        inc.calling_number, inc.current_call_id = "", ""
+        if inc.kind == "alarm" and state in DISARMED_STATES and not inc.disarmed_at:
+            await self._disarmed_later(inc, "Alarma desarmada mientras la App se reiniciaba")
+        resume = (not inc.chain_done and not inc.acknowledged_by and not inc.disarmed_at
+                  and inc.status not in ("cancelled", "acknowledged", "disarmed"))
+        if resume:
+            inc.add("resume", "Se retoman los avisos donde se quedaron")
+            inc.chain_done = False
+            inc.task = asyncio.get_running_loop().create_task(self._run(inc, resume=True))
+        else:
+            inc.chain_done = True
+        if not inc.closed:
+            if inc.record_until <= 0:
+                inc.record_until = self._close_at(inc)
+            if self.time_scale > 0:
+                asyncio.get_running_loop().create_task(self._closer(inc))
+        self.incidents.save(inc.to_dict())
+        self._changed(inc)
 
     # ------------------------------------------------------ without line
     def _line_is_down(self, inc: Incident) -> bool:

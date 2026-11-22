@@ -342,6 +342,7 @@ async def wire(conn: HAConnection, engine: Engine, store: Store, trunk: Any = No
         await engine.on_alarm_state(str(current.get("state") or ""), current.get("attributes") or {}, restarted=first_time)
     else:
         log.warning("Alarm entity %s not found", alarm_entity)
+        await engine.reconcile_restored("")
     if reporter is not None:
         try:
             await reporter.send(force=True)  # the sensor survives HA restarts only if republished

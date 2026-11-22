@@ -55,6 +55,16 @@ Two checks, set up in **Ajustes → Vigilancia de la troncal**:
 
 Tests never run while an alarm, a drill or a test call is using the line: they wait until it is free.
 
+## Restarts
+
+The open incident is kept in `/data/open_incident.json` on every change (and every 30 s), and what was already sent by Telegram and email in `/data/notify_state.json`. If the App restarts (an update, a crash) while an incident is open, it carries on with the same incident once it connects, according to where the alarm is now:
+
+- **Nobody had taken charge and the calls were going on:** they resume from the contact that was next, without repeating the first notification. A call that was in progress is marked as interrupted.
+- **Someone had taken charge, or the chain had ended:** it stays open, recording, without calling anyone.
+- **Disarmed while the App was stopped:** it is marked as disarmed at that moment, and closes after the usual minutes.
+
+The timeline says when the App was not recording ("La App se ha reiniciado: sin registro entre las 22:41 y las 22:42"): sensor changes and camera alerts in that gap are not in the incident. The same Telegram messages keep being edited and no email is sent twice. An incident older than the maximum time open is not restored. Drills resume the same way. A restart of Home Assistant does not restart the App: it reconnects and goes on.
+
 ## Cameras (Frigate)
 
 The App does not talk to Frigate or MQTT directly. It follows the `input_text` helpers that a Home Assistant automation fills on every Frigate person alert, one helper per camera, with the value:
@@ -115,7 +125,7 @@ When the MQTT integration is set up in Home Assistant, the App publishes (retain
 
 ## Data
 
-The configuration is stored in `/data/contact_center.json` the last 50 incidents in `/data/incidents.json` and the incidents' photos in `/data/media`, inside the App; both are included in Home Assistant backups. **Ajustes → Copia de la configuración** exports and imports contacts and settings (the file contains phone numbers and emails, but not the SMTP password nor the bot token).
+The configuration is stored in `/data/contact_center.json` the last 50 incidents in `/data/incidents.json`, the open one in `/data/open_incident.json` and the incidents' photos in `/data/media`, inside the App; both are included in Home Assistant backups. **Ajustes → Copia de la configuración** exports and imports contacts and settings (the file contains phone numbers and emails, but not the SMTP password nor the bot token).
 
 ## Requirements
 

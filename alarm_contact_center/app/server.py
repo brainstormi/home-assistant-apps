@@ -548,6 +548,8 @@ async def _run() -> None:
     port_ = HAPort(conn, store)
     media = MediaStore(data_dir / "media")
     engine = Engine(store, port_, incidents, media=media)
+    engine.state_path = data_dir / "open_incident.json"
+    engine.restore()  # an incident left open by a restart carries on once connected
     trunk = TrunkMonitor(store, port_, incidents, engine, data_dir / "trunk.json")
     watcher = EntityWatcher(conn, engine, store)
     reporter = Reporters([Reporter(port_.mqtt_publish, incidents), Reporter(port_.mqtt_publish, incidents, kind="drill")])
@@ -556,6 +558,8 @@ async def _run() -> None:
     engine.listeners.append(reporter.on_change)
     notifier = Notifier(store, media, frigate=port_.frigate)
     notifier.engine = engine
+    notifier.state_path = data_dir / "notify_state.json"
+    notifier.load_state()
     engine.listeners.append(notifier.on_change)
     engine.telegram_alert = notifier.alert_contact
     engine.line_down_hint = trunk.line_down
@@ -571,14 +575,26 @@ async def _run() -> None:
     scheduler = asyncio.create_task(trunk.scheduler())
     cleaner = asyncio.create_task(_clean_media(media, store))
     poller = asyncio.create_task(notifier.poll())
+    heartbeat = asyncio.create_task(_heartbeat(engine))
     try:
         await conn.run(lambda: wire(conn, engine, store, trunk, watcher, reporter, card))
     finally:
         scheduler.cancel()
         cleaner.cancel()
         poller.cancel()
+        heartbeat.cancel()
         server.shutdown()
         server.server_close()
+
+
+async def _heartbeat(engine: Any) -> None:
+    """Refresh the saved open incident, so a restart knows when the App stopped."""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            engine.persist()
+        except Exception:  # noqa: BLE001
+            log.exception("Heartbeat failed")
 
 
 async def _clean_media(media: Any, store: Store) -> None:
