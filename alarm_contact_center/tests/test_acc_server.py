@@ -172,12 +172,12 @@ class FakeResponse:
         return False
 
 
-class MediaHA(FakeHA):
+class FakeFrigate:
     def __init__(self):
-        super().__init__()
         self.opened = []
+        self.base = "http://frigate.test:5000"
 
-    def open_frigate(self, event_id, name, range_header=""):
+    def open(self, event_id, name, range_header=""):
         self.opened.append((event_id, name, range_header))
         if event_id.endswith("gone00"):
             raise urllib.error.HTTPError("u", 404, "nf", {}, None)
@@ -193,8 +193,8 @@ class MediaRouteTests(unittest.TestCase):
 
         self.tmp = tempfile.TemporaryDirectory()
         self.media = MediaStore(Path(self.tmp.name) / "media")
-        self.ha = MediaHA()
-        self.app = App(Store(Path(self.tmp.name) / "c.json"), self.ha, media=self.media)
+        self.ha = FakeFrigate()
+        self.app = App(Store(Path(self.tmp.name) / "c.json"), FakeHA(), media=self.media, frigate=self.ha)
         self.server = serve(self.app, host="127.0.0.1", port=0, allow_any_client=True)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -236,3 +236,7 @@ class MediaRouteTests(unittest.TestCase):
     def test_state_has_frigate_block(self):
         status, body, _ = self.get("/api/state")
         self.assertEqual(json.loads(body)["frigate"], {"cameras": [], "last": None})
+
+    def test_no_frigate(self):
+        self.app.frigate = None
+        self.assertEqual(self.get("/api/clip/1795354401.8-abcdef.mp4")[0], 404)

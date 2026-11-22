@@ -36,8 +36,10 @@ class App:
     """API logic, kept apart from the HTTP server so it can be tested."""
 
     def __init__(self, store: Store, ha: HomeAssistant, engine: Any = None, loop: asyncio.AbstractEventLoop | None = None,
-                 incidents: Any = None, trunk: Any = None, media: Any = None, watcher: Any = None) -> None:
+                 incidents: Any = None, trunk: Any = None, media: Any = None, watcher: Any = None,
+                 frigate: Any = None) -> None:
         self.store = store
+        self.frigate = frigate  # FrigateAPI: snapshots and clips
         self.media = media  # MediaStore with the incidents' snapshot copies
         self.watcher = watcher  # EntityWatcher: re-subscribed when the settings change
         self.trunk = trunk
@@ -161,6 +163,7 @@ class App:
         last = fw.latest()
         return {"cameras": [{"entity_id": e, "name": n} for e, n in fw.cameras.items()],
                 "configured": bool(self.store.settings()["person_entities"]),
+                "api": bool(self.frigate is not None and self.frigate.base),
                 "last": last.to_dict() if last else None}
 
     def save_contact(self, data: dict[str, Any], cid: str | None = None) -> dict[str, Any]:
@@ -244,8 +247,11 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
             """Stream a snapshot or clip from Home Assistant (Range kept for video on iOS)."""
             if not EVENT_RE.match(event_id):
                 raise ValueError("Evento no válido.")
+            if app.frigate is None:
+                self._send_json({"error": "Frigate no está configurado."}, HTTPStatus.NOT_FOUND)
+                return
             try:
-                resp = app.ha.open_frigate(event_id, name, self.headers.get("Range") or "")
+                resp = app.frigate.open(event_id, name, self.headers.get("Range") or "")
             except urllib.error.HTTPError as err:
                 log.warning("Frigate %s for %s: HTTP %s %s", name, event_id, err.code, err.reason)
                 status = HTTPStatus.NOT_FOUND if err.code == 404 else HTTPStatus.BAD_GATEWAY
@@ -404,7 +410,7 @@ async def _run() -> None:
     reporter.load()
     engine.listeners.append(reporter.on_change)
     loop = asyncio.get_running_loop()
-    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher)
+    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate)
 
     allow_any = os.environ.get("ACC_ALLOW_ANY_CLIENT") == "1"
     port = int(os.environ.get("ACC_PORT", "8099"))

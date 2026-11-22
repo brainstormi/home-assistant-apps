@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.engine import Engine, IncidentLog  # noqa: E402
-from app.frigate import FrigateWatcher, camera_names, parse_value, pick_helpers  # noqa: E402
+from app.frigate import FrigateAPI, FrigateWatcher, camera_names, parse_value, pick_helpers, url_from_title  # noqa: E402
 from app.media import MediaStore  # noqa: E402
 from app.store import PinStatus, Store  # noqa: E402
 from tests.test_acc_engine import TRIGGER, FakePort  # noqa: E402
@@ -59,6 +59,23 @@ class HelperFormatTests(unittest.TestCase):
         self.assertEqual(fw.latest().camera, "Patio")
         old, _ = fw.on_value("input_text.a", rid(now - 5 * 3600), now=now)
         self.assertIsNone(old)  # older than what the App keeps
+
+
+class FrigateAPITests(unittest.TestCase):
+    def test_address(self):
+        self.assertEqual(url_from_title("frigate.local:5000"), "http://frigate.local:5000")
+        self.assertEqual(url_from_title("https://nvr.example/"), "https://nvr.example")
+        self.assertEqual(url_from_title("Mi Frigate"), "")
+        settings = {"frigate_url": ""}
+        api = FrigateAPI(lambda: settings)
+        api.detected = "http://frigate.local:5000"
+        self.assertEqual(api.base, "http://frigate.local:5000")
+        settings["frigate_url"] = "http://otro:5000/"
+        self.assertEqual(api.base, "http://otro:5000")
+        settings["frigate_url"] = ""
+        api.detected = ""
+        with self.assertRaises(OSError):
+            api.open("1795354401.8-abcdef", "clip.mp4")
 
 
 class MediaPort(FakePort):

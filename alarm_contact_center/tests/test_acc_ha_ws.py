@@ -47,6 +47,8 @@ class FakeConn:
         self.subs[key] = (payload, handler)
 
     async def command(self, payload, timeout=30):
+        if payload["type"] == "config_entries/get":
+            return [{"domain": "frigate", "state": "loaded", "title": "frigate.test:5000"}]
         assert payload["type"] == "get_states"
         return self.states
 
@@ -184,6 +186,7 @@ class WatcherTests(unittest.IsolatedAsyncioTestCase):
             follow = [p for p, _ in conn.triggers if "trigger" in p and p["trigger"].get("entity_id") != "alarm_control_panel.alarmo"]
             self.assertEqual(follow[0]["trigger"]["entity_id"], ["binary_sensor.puerta", "input_text.persona_huerto"])
             self.assertEqual(engine.frigate.latest().camera, "Persona huerto")  # caught up from the current value
+            self.assertEqual(engine.port.frigate.base, "http://frigate.test:5000")
 
             store.save_settings({"person_entities": ["input_text.persona_huerto", "input_text.persona_patio"]})
             await watcher.refresh()

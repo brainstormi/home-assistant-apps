@@ -61,7 +61,7 @@ The App does not talk to Frigate or MQTT directly. It follows the `input_text` h
 for example `1795354401.831865-vqtljq,1795354411.489668-aradwo`. An automation on the MQTT topic `frigate/reviews` that keeps only `severity: alert` reviews with a `person` object does this in two actions; the App never decides which cameras or zones count, the automation does.
 
 - **Which helpers:** **Ajustes → Cámaras (Frigate)**, one entity per line. Left empty, every `input_text` whose value looks like the above is used. The camera name comes from the helpers' friendly names, without the words they all share ("Person event garden" and "Person event garage" become "Garden" and "Garage").
-- **In the incident:** alerts from the chosen minutes before the trigger (default 5) and every alert while the chain runs are added to the timeline, with a photo. The App keeps its own copy of the snapshot (in `/data/media`, deleted after the chosen days, default 90) and asks Frigate to retain the event (`frigate/event/retain` through the Frigate integration), so the clip is not deleted by Frigate's retention. Photos and clips are served through the Frigate integration's notification proxy (`/api/frigate/notifications/<id>/snapshot.jpg` and `clip.mp4`), which must be enabled in the integration's options.
+- **In the incident:** alerts from the chosen minutes before the trigger (default 5) and every alert while the chain runs are added to the timeline, with a photo. The App keeps its own copy of the snapshot (in `/data/media`, deleted after the chosen days, default 90) and asks Frigate to retain the event (`frigate/event/retain` through the Frigate integration), so the clip is not deleted by Frigate's retention. Photos and clips come straight from Frigate's API (`/api/events/<id>/snapshot.jpg` and `clip.mp4`): its address is taken from the Frigate integration (the entry's `host:port`), or set in **Dirección de Frigate**. The integration's notification proxy is not used: it fails for requests that come through the Supervisor, the only way an App can reach Home Assistant.
 - **Incident sensors:** entities listed under **Registro del incidente** (doors, windows, motion) are added to the timeline when they change during an incident.
 - **Home page:** the last person seen and the cameras being followed.
 
@@ -77,7 +77,7 @@ The configuration is stored in `/data/contact_center.json` the last 50 incidents
 
 ## Requirements
 
-- Optional: the Frigate integration with its notification proxy enabled, for photos and clips, and the MQTT integration, for the Assist sensor.
+- Optional: the Frigate integration (or Frigate's address), for photos and clips, and the MQTT integration, for the Assist sensor.
 - The Asterisk Realtime Bridge App (0.9.2 or later) and its call script (`script.llamada_saliente`). When the Bridge is installed from the same repository as this App, its id is found automatically; otherwise set it in **Ajustes → Integración con Home Assistant**, where the alarm entity and the call script can be changed too.
 
 ## Options
