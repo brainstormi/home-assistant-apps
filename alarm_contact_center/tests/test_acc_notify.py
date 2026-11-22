@@ -184,3 +184,38 @@ class SecretTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SenderTests(unittest.TestCase):
+    def test_from_header_with_name(self):
+        import smtplib
+        from unittest import mock
+
+        from app.notify import send_email
+
+        sent = []
+
+        class FakeSMTP:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def starttls(self, context=None):
+                pass
+
+            def login(self, user, pw):
+                pass
+
+            def send_message(self, msg):
+                sent.append(msg)
+
+        settings = {"smtp_host": "smtp.example.com", "smtp_port": 587, "smtp_security": "starttls", "smtp_user": "u",
+                    "smtp_password": "p", "smtp_from": "alarma@example.com", "smtp_from_name": "Alarma de casa"}
+        with mock.patch.object(smtplib, "SMTP", FakeSMTP):
+            send_email(settings, "a@example.com", "s", "t", "<p>t</p>")
+        self.assertEqual(sent[0]["From"], "Alarma de casa <alarma@example.com>")

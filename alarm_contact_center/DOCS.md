@@ -78,7 +78,7 @@ Contacts with an email or a Telegram chat are told alongside the calls. Nothing 
 
 Setting up, in **Ajustes**:
 
-- **Correo:** the SMTP account the App sends from (server, port, STARTTLS/SSL, user, password, sender). Gmail and Outlook need an app password. **Probar** sends a test email.
+- **Correo:** the SMTP account the App sends from (server, port, STARTTLS/SSL, user, password, sender address and name; the address needs no mailbox, only to be allowed by the sending service). Gmail and Outlook need an app password. **Probar** sends a test email.
 - **Telegram:** create a bot with @BotFather (`/newbot`) and paste its token. Use a bot only for this App: the chat finder reads the bot's pending updates, which another program polling the same bot would take first.
 - **Contact:** the email, and the Telegram chat: the person sends any message to the bot, then **Buscar** lists the chats that wrote to it. **Probar** sends a test message.
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1
+
+- Email: sender name ("Nombre del remitente", default "Alarma de casa") next to the sender address.
+
 ## 0.8.0
 
 Phase 4: email and Telegram.
