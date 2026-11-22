@@ -392,8 +392,8 @@ class Bridge:
                 log.warning("[%s] voicemail_message needs fallback_tts: no message left", call.short_id)
         await self._hang_up(writer)
         self.fallback.forget(call)
-        await self._fire({**self._event(call, "ended", "voicemail"), "amdstatus": "MACHINE",
-                          "amdcause": cause, "voicemail_message_left": left})
+        await self._fire({**self._event(call, "ended", "voicemail"), "detected_by": "amd",
+                          "amdstatus": "MACHINE", "amdcause": cause, "voicemail_message_left": left})
 
     async def _play(self, writer: Any, pcm: bytes, frame_seconds: float = FRAME_MS / 1000) -> None:
         loop = asyncio.get_running_loop()
@@ -530,6 +530,9 @@ class Bridge:
             "silence": getattr(session, "silence_ended", False),
         }
         resolved = bool(source.get("resolved"))
+        voicemail = fallback is None and bool(getattr(session, "voicemail", False))
+        if voicemail and outbound is not None and result in ("answered", "confirmed"):
+            result = "voicemail"
         if resolved and outbound is not None and result in ("answered", "confirmed"):
             result = "resolved"
         if outbound:
@@ -545,6 +548,9 @@ class Bridge:
             data["resolved"] = True
         if source.get("silence"):
             data["ended_by"] = "silence"
+        if result == "voicemail":
+            data["detected_by"] = "assistant"
+            data["voicemail_message_left"] = bool(getattr(session, "voicemail_message_left", False))
         data["duration"] = round(duration)
         data["pin_verified"] = bool(session and session.pin_person is not None)
         if session and session.pin_person:
