@@ -159,6 +159,17 @@ VOICEMAIL_RULES = (
 )
 
 
+# Outbound calls with an entity that describes the incident (context_entity).
+CONTEXT_RULES = (
+    "- What has happened in this incident is in {entity} (its \"context\" field in "
+    "home_status). If you are asked what happened, which doors were opened, who has "
+    "been called or whether anyone was seen, read it with home_status before "
+    "answering. Summarise it in a few sentences, with times; do not read the whole "
+    "timeline unless you are asked to. It changes during the call: read it again "
+    "for each new question."
+)
+
+
 # How to read the home_status tool (outbound calls).
 STATUS_READING_RULES = (
     "- home_status returns the current state of the entities you may talk about. "
@@ -343,6 +354,8 @@ class Config:
             )
             if getattr(call, "detect_voicemail", False):
                 rules += "\n" + VOICEMAIL_RULES
+            if getattr(call, "context_entity", ""):
+                rules += "\n" + CONTEXT_RULES.format(entity=call.context_entity)
             text += "\nThis call (these rules take precedence):\n" + rules + "\n"
             # The notice also lives here, not only in the greeting: if the person
             # talks over the greeting, the model must still know what to say.

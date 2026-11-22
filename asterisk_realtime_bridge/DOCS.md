@@ -214,6 +214,7 @@ call_id: "0b6c3a52-7f0e-4d3c-9a51-2f5d8e9a1c07"  # a new UUID per attempt; also 
 message: "The alarm went off: motion in the garage at 03:12."
 profile: Management     # QueryOnly or Management
 person: person.sonia    # optional; selects the personal PIN (entity id or name) and is reported back
+context_entity: sensor.alarm_incident  # optional; see "Incident context" below
 number: "600111222"     # optional, informative: reported in the events
 timeout: 60             # seconds to answer before the result is no_answer
 confirm: voice_or_dtmf  # optional: implicit (default), voice, dtmf or voice_or_dtmf
@@ -363,6 +364,12 @@ exten => _X.,1,SoftHangup(Local/${EXTEN}@bridge-outbound,a)
 ```
 
 The ring time (30 s here) should be shorter than the command's `timeout`.
+
+## Incident context
+
+`home_status` (the read-only tool of outbound calls and query-only incoming calls) lists, for each entity, its state and since when. If an entity has an **`assistant_context`** attribute (a text written for the assistant, up to 2000 characters are passed), it is added as `context`: for example the timeline of an alarm incident. Any entity can provide it.
+
+An outbound call can also name a **`context_entity`**: during that call, that entity is added to `home_status` (listed first, whatever the search) even if it is not exposed to Assist or in `query_include`, and the assistant is told to read it before answering what happened, who was called or whether anyone was seen, and to summarise it with times. It is read only: it never allows actions and does not widen anything else. It works with `QueryOnly` and `Management` and does not depend on the PIN. An invalid entity id is ignored (logged); the call goes on.
 
 ## Trunk test
 

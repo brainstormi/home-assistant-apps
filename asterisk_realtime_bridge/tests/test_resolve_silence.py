@@ -279,3 +279,20 @@ class AssistantVoicemailTests(RealtimeTests):
         cmd = parse_command({"action": "outbound", "call_id": CALL_ID, "message": "x",
                              "profile": "QueryOnly", "detect_voicemail": "false"})
         self.assertFalse(cmd.detect_voicemail)
+
+
+class ContextEntityTests(RealtimeTests):
+    async def test_context_entity_is_read_and_mentioned(self):
+        await self.start(context_entity="sensor.alarm_contact_center_drill")
+        self.assertIn("sensor.alarm_contact_center_drill", self.ws.sent[0]["session"]["instructions"])
+        self.ws.push(call("home_status", {}, "s1"))
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.session.status.extras[-1], ("sensor.alarm_contact_center_drill",))
+
+    def test_command(self):
+        cmd = parse_command({"action": "outbound", "call_id": CALL_ID, "message": "x", "profile": "QueryOnly",
+                             "context_entity": "sensor.Alarm_Contact_Center_Incident"})
+        self.assertEqual(cmd.context_entity, "sensor.alarm_contact_center_incident")
+        cmd = parse_command({"action": "outbound", "call_id": CALL_ID, "message": "x", "profile": "QueryOnly",
+                             "context_entity": "sensor.x; rm"})
+        self.assertEqual(cmd.context_entity, "", "an invalid entity is ignored, the call goes on")

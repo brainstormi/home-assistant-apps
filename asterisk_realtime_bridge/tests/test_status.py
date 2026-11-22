@@ -153,3 +153,48 @@ class HomeStatusTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContextTests(unittest.IsolatedAsyncioTestCase):
+    def test_assistant_context_is_included_and_trimmed(self):
+        from datetime import datetime, timezone
+        from app.status import describe
+        now = datetime(2026, 11, 22, 22, 10, tzinfo=timezone.utc)
+        states = [
+            {"entity_id": "sensor.incident", "state": "active",
+             "attributes": {"friendly_name": "Incidente", "assistant_context": "Cronología:\n22:05 Alarma"}},
+            {"entity_id": "sensor.long", "state": "x", "attributes": {"assistant_context": "a" * 2500}},
+            {"entity_id": "sensor.none", "state": "x", "attributes": {"assistant_context": "  "}},
+        ]
+        items = describe(states, now)["entities"]
+        self.assertEqual(items[0]["context"], "Cronología:\n22:05 Alarma")
+        self.assertEqual(len(items[1]["context"]), 2001)
+        self.assertNotIn("context", items[2])
+        found = describe(states, now, "garaje", always=("sensor.incident",))["entities"]
+        self.assertEqual([i["entity_id"] for i in found], ["sensor.incident"])
+
+    async def test_extra_entity_outside_the_scope(self):
+        from app.status import HomeStatus
+
+        class HA:
+            async def ws(self, command, **kwargs):
+                if command == "homeassistant/expose_entity/list":
+                    return {"exposed_entities": {"light.a": {"conversation": True}}}
+                return []
+
+            async def get(self, path):
+                return [{"entity_id": "light.a", "state": "on", "attributes": {}},
+                        {"entity_id": "sensor.drill", "state": "active",
+                         "attributes": {"assistant_context": "Simulacro"}},
+                        {"entity_id": "lock.door", "state": "locked", "attributes": {}}]
+
+            async def render(self, template):
+                return "2026-11-22T22:10:00+01:00"
+
+        status = HomeStatus(HA(), "", "")
+        plain = await status.snapshot()
+        self.assertEqual([e["entity_id"] for e in plain["entities"]], ["light.a"])
+        extra = await status.snapshot(extra=("sensor.drill", "sensor.missing"))
+        self.assertEqual([e["entity_id"] for e in extra["entities"]], ["sensor.drill", "light.a"])
+        self.assertEqual(extra["entities"][0]["context"], "Simulacro")
+        self.assertFalse(await status.allows(["sensor.drill"]), "never widens what can be acted on")

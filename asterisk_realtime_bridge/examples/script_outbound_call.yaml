@@ -93,6 +93,11 @@ fields:
     description: Optional short text left on the machine (needs the fallback voice).
     selector:
       text: {}
+  context_entity:
+    name: Context entity
+    description: Optional entity whose assistant_context the assistant reads in this call (read only), e.g. the incident sensor.
+    selector:
+      entity: {}
   engine:
     name: Engine
     default: realtime
@@ -139,6 +144,7 @@ sequence:
               engine: "{{ engine | default('realtime') }}"
               voicemail_message: "{{ voicemail_message | default('') }}"
               detect_voicemail: "{{ detect_voicemail | default(false) | bool }}"
+              context_entity: "{{ context_entity | default('') }}"
         - alias: Ask Asterisk to dial
           action: hassio.addon_stdin
           data:
