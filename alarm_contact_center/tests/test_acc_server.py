@@ -62,6 +62,17 @@ class ServerTests(unittest.TestCase):
         except urllib.error.HTTPError as err:
             return err.code, json.loads(err.read() or b"null")
 
+    def test_index_versions_static_files(self):
+        from app import __version__
+
+        with urllib.request.urlopen(self.base + "/") as resp:
+            html = resp.read().decode()
+            self.assertEqual(resp.headers["Cache-Control"], "no-store")
+        self.assertIn(f'static/app.js?v={__version__}', html)
+        self.assertIn(f'static/style.css?v={__version__}', html)
+        with urllib.request.urlopen(self.base + f"/static/app.js?v={__version__}") as resp:
+            self.assertEqual(resp.status, 200)
+
     def test_index_and_static(self):
         with urllib.request.urlopen(self.base + "/") as resp:
             self.assertIn(b"Alarm Contact Center", resp.read())

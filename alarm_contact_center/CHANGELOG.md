@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.6
+
+- The panel loads its scripts and styles with the App version in the URL, so browsers and the HA mobile app no longer keep an old panel after an update.
+
 ## 0.5.5
 
 - Doors with one sensor per end position: a door or window sensor whose name ends in "Cerrada"/"Abierta" (or "Closed"/"Open") is described by the door's state, e.g. "Puerta Garaje: abierta" when it leaves the closed position.

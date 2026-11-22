@@ -350,6 +350,20 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+        def _send_index(self) -> None:
+            """index.html points at the static files with the version in the URL, so a
+            browser (or the HA mobile app) never keeps an old panel after an update."""
+            html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+            for name in ("app.js", "style.css", "theme.js"):
+                html = html.replace(f'"static/{name}"', f'"static/{name}?v={__version__}"')
+            body = html.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
         def _route(self) -> list[str]:
             path = self.path.split("?", 1)[0]
             return [p for p in path.split("/") if p]
@@ -360,7 +374,7 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
             parts = self._route()
             try:
                 if method == "GET" and not parts:
-                    self._send_file(STATIC_DIR / "index.html")
+                    self._send_index()
                 elif method == "GET" and parts[0] == "static" and len(parts) == 2:
                     self._send_file(STATIC_DIR / parts[1])
                 elif parts[:1] == ["api"]:
