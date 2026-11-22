@@ -84,7 +84,7 @@ fields:
       text: {}
   detect_voicemail:
     name: Detect answering machines
-    description: Asterisk's AMD (bridge-notice-amd context, adds 2-4 s) and the assistant both watch for voicemail; the result is then voicemail.
+    description: The assistant recognises voicemail (greeting, beep, call screening); the bridge leaves the message after the beep and the result is voicemail.
     default: false
     selector:
       boolean: {}
@@ -145,7 +145,7 @@ sequence:
             addon: <asterisk-slug>
             input: >-
               channel originate Local/{{ number }}_{{ call_id }}@bridge-outbound
-              extension {{ call_id }}@{{ 'bridge-notice-amd' if detect_voicemail | default(false) else 'bridge-notice' }}
+              extension {{ call_id }}@bridge-notice
         - alias: Wait for the end of the call
           wait_for_trigger:
             - trigger: event
