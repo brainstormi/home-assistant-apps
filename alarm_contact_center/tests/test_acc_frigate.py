@@ -204,3 +204,16 @@ class DescribeTests(unittest.TestCase):
         self.assertEqual(describe_change("lock.puerta", "unlocked", ""), "se abre la cerradura")
         self.assertEqual(describe_change("lock.puerta", "unlocking", ""), "")
         self.assertEqual(describe_change("lock.puerta", "unavailable", ""), "no disponible")
+
+
+class PositionTests(unittest.TestCase):
+    def test_end_position_sensors(self):
+        from app.engine import describe_position
+
+        self.assertEqual(describe_position("Puerta Patio Cerrada", "on", "door"), ("Puerta Patio", "abierta"))
+        self.assertEqual(describe_position("Puerta Patio Cerrada", "off", "door"), ("Puerta Patio", "cerrada"))
+        self.assertEqual(describe_position("Puerta Patio Abierta", "on", "door"), ("Puerta Patio", "abierta del todo"))
+        self.assertEqual(describe_position("Puerta Patio Abierta", "off", "door"), ("Puerta Patio", "se está cerrando"))
+        self.assertEqual(describe_position("Puerta Principal", "on", "door"), ("Puerta Principal", ""))
+        self.assertEqual(describe_position("Movimiento abierto", "on", "motion"), ("Movimiento abierto", ""))
+        self.assertEqual(describe_position("Cerrada", "on", "door"), ("Cerrada", ""))

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.5
+
+- Doors with one sensor per end position: a door or window sensor whose name ends in "Cerrada"/"Abierta" (or "Closed"/"Open") is described by the door's state, e.g. "Puerta Garaje: abierta" when it leaves the closed position.
+
 ## 0.5.4
 
 - Incident sensors: locks ("se cierra con llave", "se abre la cerradura", "atascada"), person occupancy ("detecta una persona") and presence described in Spanish.
