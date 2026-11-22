@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+Phase 4: email and Telegram.
+
+- Telegram: a live message per contact with the timeline, edited as the incident goes on, short messages for taking charge, no answer, disarm and close, and the photos as they arrive.
+- Email: one when the chain of calls ends (timeline so far) and the final report when the incident closes, with the photos attached.
+- Nothing is sent if the alarm is disarmed within the "Espera antes de avisar por Telegram y correo"; drills are sent marked, only to the participants. Failures are written in the timeline.
+- Settings for the SMTP account and the bot token; secrets are never returned to the panel nor exported. Test buttons, and a chat finder for contacts (chats that wrote to the bot).
+- Contacts with Telegram or email warn when the bot or the account is not set up.
+
 ## 0.7.0
 
 - Taking charge stops the calls but no longer ends the incident: it stays open, recording cameras and sensors, until the alarm is disarmed plus "Seguir registrando después del desarme" (default 10 minutes), or until "Cerrar si nadie desarma tras" (default 120 minutes). Entries after the disarm are marked "después del desarme"; the closing is a timeline entry.

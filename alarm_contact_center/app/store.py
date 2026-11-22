@@ -69,6 +69,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "incident_entities": [],
     "person_entities": [],  # Frigate person helpers (input_text); empty = detect them
     "frigate_url": "",  # Frigate's API address; empty = taken from the Frigate integration
+    # Email (the App's own SMTP account) and Telegram (the App's own bot).
+    "smtp_host": "",
+    "smtp_port": 587,
+    "smtp_security": "starttls",  # starttls, ssl or none
+    "smtp_user": "",
+    "smtp_password": "",  # secret
+    "smtp_from": "",
+    "telegram_token": "",  # secret
     # Empty means DEFAULT_PIN_ENTITY (what the Bridge publishes out of the box).
     "bridge_pin_entity": "",
     # How this installation is wired together.
@@ -303,6 +311,21 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
         errors["person_entities"] = "Tienen que ser helpers input_text: " + ", ".join(bad[:3])
     s["person_entities"] = list(dict.fromkeys(helpers))[:20]
 
+    s["smtp_host"] = str(s["smtp_host"] or "").strip()
+    if s["smtp_host"] and not re.match(r"^[A-Za-z0-9.-]+$", s["smtp_host"]):
+        errors["smtp_host"] = "Servidor no válido (p. ej. smtp.gmail.com)."
+    s["smtp_port"] = _int_in(s["smtp_port"], 1, 65535, "smtp_port", errors)
+    if s["smtp_security"] not in ("starttls", "ssl", "none"):
+        s["smtp_security"] = "starttls"
+    s["smtp_user"] = str(s["smtp_user"] or "").strip()
+    s["smtp_password"] = str(s["smtp_password"] or "")
+    s["smtp_from"] = str(s["smtp_from"] or "").strip()
+    if s["smtp_from"] and not _EMAIL_RE.match(s["smtp_from"]):
+        errors["smtp_from"] = "Correo no válido."
+    s["telegram_token"] = str(s["telegram_token"] or "").strip()
+    if s["telegram_token"] and not re.match(r"^\d{5,}:[A-Za-z0-9_-]{30,}$", s["telegram_token"]):
+        errors["telegram_token"] = "No parece un token de bot (lo da @BotFather: 123456:ABC…)."
+
     s["frigate_url"] = str(s["frigate_url"] or "").strip().rstrip("/")
     if s["frigate_url"] and not re.match(r"^https?://[^\s/]+(:\d+)?(/[^\s]*)?$", s["frigate_url"]):
         errors["frigate_url"] = "Tiene que ser una dirección como http://servidor:5000."
@@ -333,6 +356,18 @@ def contact_warnings(c: dict[str, Any], pins: PinStatus) -> list[str]:
         out.append("No se puede comprobar si tiene PIN: el Bridge aún no publica esa información.")
     if c["can_manage"] and c["person"] and pins.allows(c["person"]) is False:
         out.append("Ya no tiene PIN en el Bridge: las llamadas saldrán en solo consulta.")
+    return out
+
+
+SECRET_KEYS = ("smtp_password", "telegram_token")
+
+
+def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Settings for the panel and exports: secrets blanked, with whether each is set."""
+    out = copy.deepcopy(settings)
+    out["secrets_set"] = {k: bool(out.get(k)) for k in SECRET_KEYS}
+    for k in SECRET_KEYS:
+        out[k] = ""
     return out
 
 
@@ -427,9 +462,17 @@ class Store:
             self._save()
 
     def save_settings(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Merge and save. Secrets: "" or missing keeps the stored one, None removes it.
+        Returns the settings without secrets (what the panel may see)."""
+        data = dict(data)
+        for key in SECRET_KEYS:
+            if key in data and data[key] is None:
+                data[key] = ""
+            elif key in data and data[key] == "":
+                del data[key]
         with self._lock:
             merged = {**self._data["settings"], **data}
             clean = clean_settings(merged)
             self._data["settings"] = clean
             self._save()
-            return copy.deepcopy(clean)
+            return public_settings(clean)
