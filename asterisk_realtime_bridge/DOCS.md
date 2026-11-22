@@ -364,6 +364,63 @@ exten => _X.,1,SoftHangup(Local/${EXTEN}@bridge-outbound,a)
 
 The ring time (30 s here) should be shorter than the command's `timeout`.
 
+## Trunk test
+
+A real test of the SIP trunk, for a status panel or an alarm system: the bridge calls **your own line** through the trunk and checks that the call comes back in. Nothing rings and no call is set up: the returning call is hung up before it is answered.
+
+```yaml
+action: hassio.addon_stdin
+data:
+  addon: <bridge app id>
+  input:
+    action: trunk_test
+    test_id: "check-0815"      # yours, returned in the event
+    number: "910000000"        # your own line, as the trunk dials it
+    timeout: 20                # seconds (5-60)
+```
+
+When it ends, the bridge fires `asterisk_realtime_bridge_trunk`:
+
+| Field | Meaning |
+|-------|---------|
+| `test_id` | as sent |
+| `result` | `ok`: it went out and came back. `out_only`: the operator took the call (`BUSY`, `NOANSWER`, `ANSWER`, `CANCEL`) but it did not come back. `failed`: it never went out (`CHANUNAVAIL`, `CONGESTION`..., no report, or an invalid command) |
+| `dialstatus` | `DIALSTATUS` of the outgoing call (`BUSY` when it came back: we hung that leg up) |
+| `arrived`, `duration` | whether it came back; seconds |
+| `error` | when the test could not run (another test is running, invalid `number` or `test_id`, Asterisk unreachable) |
+
+One test at a time. It uses the line for a few seconds; do not run it while an alarm call may need the line. **Some operators reject calls to the line itself**: then the result is always `out_only` with `BUSY`, which still proves that calls go out.
+
+Dialplan: the context below, a report line in `bridge-report`, and two lines in your **incoming** context (the trunk test check must be its first rule, before the list of allowed numbers). It needs the `asterisk_app` option.
+
+```
+[bridge-trunk-test]
+exten => _X.,1,Set(NUM=${CUT(EXTEN,_,1)})
+ same => n,Set(TEST=${CUT(EXTEN,_,2)})
+ same => n,Set(GLOBAL(TRUNK_TEST)=${TEST})
+ same => n,Set(GLOBAL(TRUNK_TEST_NUM)=${NUM})
+ same => n,Set(CALLERID(num)=<caller-id>)
+ same => n,Dial(PJSIP/${NUM}@<trunk-endpoint>,15)
+ same => n,Set(GLOBAL(TRUNK_TEST)=)
+ same => n,Set(LIST=NOANSWER-BUSY-CONGESTION-CHANUNAVAIL-CANCEL-DONTCALL-TORTURE-INVALIDARGS-ANSWER)
+ same => n,Set(CODE=00${FIELDNUM(LIST,-,${DIALSTATUS})})
+ same => n,Originate(Local/7e5700${CODE:-2}${TEST:8}@bridge-report,app,Wait,3)
+ same => n,Hangup()
+
+; in [bridge-report], next to the _fa11. extension:
+exten => _7e57.,1,Answer()
+ same => n,AudioSocket(${EXTEN},127.0.0.1:9092)
+ same => n,Hangup()
+
+; in your incoming context, right after its first line:
+ same => n,GotoIf($["${TRUNK_TEST}" != "" & "${CALLERID(num):-9}" = "${TRUNK_TEST_NUM:-9}"]?trunktest)
+; ... and at the end of that context:
+ same => n(trunktest),Originate(Local/7e57a100${TRUNK_TEST:8}@bridge-report,app,Wait,3)
+ same => n,Hangup(17)
+```
+
+The caller id is compared by its last 9 digits, so `+34...` and the national form match.
+
 ## When OpenAI is unavailable (fallback)
 
 With `fallback_tts` set to a Home Assistant TTS entity (for example `tts.piper`), the bridge keeps working in a reduced mode when OpenAI cannot be used (outage, invalid key, no credit, or the connection drops mid-call):

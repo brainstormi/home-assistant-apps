@@ -23,6 +23,7 @@ from .health import OpenAIHealth, describe_error, realtime_probe
 from .outbound import CommandError, OutboundCall, Registry, parse_command, read_commands
 from .pins import MODE_OFF, CallAuth
 from .session import CallSession, call_auth, keepalive
+from .trunk import TrunkTester, trunk_report
 from .local import LocalConversation
 from .status import HomeStatus
 from .stt import SttTest
@@ -67,6 +68,7 @@ class Bridge:
         self.health = OpenAIHealth(self.home, self._probe_openai, cfg.openai_check_minutes)
         self.stt_test: SttTest | None = None
         self.live: dict[str, LiveCall] = {}
+        self.trunk = TrunkTester(self._fire_event, self._asterisk)
         self.people: list[str] = []  # person.* entities in Home Assistant
 
     @property
@@ -86,6 +88,7 @@ class Bridge:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         await self.registry.close()
+        await self.trunk.close()
 
     # ------------------------------------------------------- HA commands
     async def on_command(self, data: Any) -> None:
@@ -97,6 +100,9 @@ class Bridge:
             return
         if action == "hangup":
             await self.hangup(str(data.get("call_id") or ""))
+            return
+        if action == "trunk_test":
+            await self.trunk.start(data)
             return
         if isinstance(data, dict) and data.get("action") == "stt_test":
             engine = str(data.get("engine") or "stt.faster_whisper")
@@ -188,9 +194,8 @@ class Bridge:
         ``Local/<number>_<call id>@bridge-outbound`` (see DOCS). A failure here
         is only logged: the call is cancelled anyway.
         """
-        app = self.cfg.asterisk_app
         number = call.number.strip()
-        if not app:
+        if not self.cfg.asterisk_app:
             log.info("[%s] asterisk_app not set: the phone keeps ringing until Asterisk gives up",
                      call.short_id)
             return
@@ -200,7 +205,7 @@ class Bridge:
             return
         command = f"channel originate Local/{number}_{call.call_id}@bridge-kill application Wait 1"
         try:
-            await self.home.call_service("hassio", "addon_stdin", {"addon": app, "input": command})
+            await self._asterisk(command)
             log.info("[%s] asked Asterisk to stop the ringing", call.short_id)
         except Exception as err:  # noqa: BLE001
             log.warning("[%s] could not ask Asterisk to stop the ringing: %r", call.short_id, err)
@@ -231,11 +236,21 @@ class Bridge:
         return data
 
     async def _fire(self, data: dict[str, Any]) -> None:
+        await self._fire_event(EVENT_TYPE, data)
+
+    async def _fire_event(self, event_type: str, data: dict[str, Any]) -> None:
         try:
-            await self.home.fire_event(EVENT_TYPE, data)
-            log.debug("Event %s: %s", EVENT_TYPE, data)
+            await self.home.fire_event(event_type, data)
+            log.debug("Event %s: %s", event_type, data)
         except Exception as err:  # noqa: BLE001
-            log.warning("Could not send the call event to Home Assistant: %r", err)
+            log.warning("Could not send the event %s to Home Assistant: %r", event_type, err)
+
+    async def _asterisk(self, command: str) -> None:
+        """Send a CLI command to the Asterisk app (through Home Assistant)."""
+        if not self.cfg.asterisk_app:
+            raise RuntimeError("asterisk_app is not set")
+        await self.home.call_service("hassio", "addon_stdin",
+                                     {"addon": self.cfg.asterisk_app, "input": command})
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
@@ -246,6 +261,11 @@ class Bridge:
                 return
             full_id = str(uuid.UUID(bytes=payload))
             call_id = full_id[:8]
+            trunk = trunk_report(full_id)
+            if trunk is not None:
+                await self._hang_up(writer)
+                await self.trunk.on_report(*trunk)
+                return
             report = dial_report(full_id)
             if report is not None:
                 await self._on_dial_report(writer, *report)
