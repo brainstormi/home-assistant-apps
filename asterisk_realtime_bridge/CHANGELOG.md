@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.9.2
+- Voicemail recognised by the assistant: it reports it in silence (no filler sentence), and the bridge itself leaves `voicemail_message` with the fallback voice, exactly as written, once the greeting and its beep are over. `voicemail_message_left` is true only when the whole message was played. Before, the assistant said a filler sentence and the message could be lost.
+
 ## 0.9.1
 - **The assistant recognises voicemail:** with `detect_voicemail: true` in the outbound command, it gets a `report_voicemail` tool for recorded greetings, beeps and call screening such as iPhone's Live Voicemail. It leaves `voicemail_message` (if any) and hangs up; the call ends with `result: voicemail` and `detected_by: assistant` (`amd` when Asterisk's `AMD()` detected it).
 - `bridge-notice-amd` dialplan: a jitter buffer around `AMD()` fills the gaps when the mobile network sends no audio during silence (before, `AMD()` heard nothing and could not decide).
