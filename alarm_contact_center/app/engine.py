@@ -281,7 +281,7 @@ class Engine:
             try:
                 data = await fetch(event_id)
             except Exception as err:  # noqa: BLE001
-                log.info("[%s] snapshot %s not ready: %s", inc.id, event_id, err)
+                log.warning("[%s] snapshot %s not ready: %s", inc.id, event_id, err)
                 continue
             if data and self.media.save(inc.id, event_id, data):
                 entry["media"]["snapshot"] = event_id

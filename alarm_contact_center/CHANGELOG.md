@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+
+- Log why a Frigate photo or clip could not be fetched.
+
 ## 0.5.0
 
 Phase 3: the incident with cameras and sensors.
