@@ -387,6 +387,40 @@ function field(id, labelText, input, help, error) {
     help ? el("span", { class: "help" }, help) : null);
 }
 
+function withButtons(input, ...buttons) {
+  return el("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap" },
+    el("div", { style: "flex:1 1 180px;display:flex" }, input), ...buttons);
+}
+
+function testButton(channel, input) {
+  return el("button", { class: "btn", type: "button", onclick: async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      await api("POST", "api/notify/test", { channel, to: input.value });
+      toast(channel === "email" ? "Correo de prueba enviado." : "Mensaje de prueba enviado.");
+    } catch (e) { toast(e.message, true); } finally { btn.disabled = false; }
+  } }, "Probar");
+}
+
+function chatFinder(input) {
+  return el("button", { class: "btn", type: "button", onclick: async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      const data = await api("GET", "api/telegram/chats");
+      const box = btn.parentElement.parentElement;
+      box.querySelectorAll(".chat-list").forEach((n) => n.remove());
+      const list = el("div", { class: "chat-list banner info", style: "margin-top:8px" },
+        data.chats.length
+          ? [el("span", {}, "Elige el chat:"), ...data.chats.map((c) => el("button", { class: "btn", type: "button", onclick: () => {
+              input.value = c.id; list.remove(); } }, `${c.name}${c.type === "private" ? "" : " (" + c.type + ")"}`))]
+          : el("span", {}, `Nadie ha escrito todavía al bot${data.bot ? " @" + data.bot : ""}. Pídele a la persona que le envíe cualquier mensaje desde Telegram y vuelve a pulsar «Buscar».`));
+      box.append(list);
+    } catch (e) { toast(e.message, true); } finally { btn.disabled = false; }
+  } }, "Buscar");
+}
+
 function showContact(id, draft = null, errors = {}) {
   setNav("inicio");
   const s = STATE;
@@ -496,8 +530,11 @@ function showContact(id, draft = null, errors = {}) {
         el("span", { class: "small muted" }, "Al menos un canal. Las notificaciones se envían al momento; la llamada, cuando le toque.")),
       el("div", { class: "grid" },
         field("phone", "Teléfono", phone, "9 cifras, con o sin +34.", errors.phone),
-        field("email", "Correo electrónico", email, "Aviso inicial e informe final.", errors.email),
-        field("telegram", "Chat de Telegram", telegram, "Número del chat. El bot llegará en una fase posterior.", errors.telegram_chat_id),
+        field("email", "Correo electrónico", withButtons(email, testButton("email", email)),
+          "Le llega un correo cuando alguien atiende la alarma (o nadie lo hace) y el informe final con las fotos.", errors.email),
+        field("telegram", "Chat de Telegram", withButtons(telegram, chatFinder(telegram), testButton("telegram", telegram)),
+          "Sigue la alarma en directo: un mensaje que se actualiza solo y las fotos según llegan. La persona tiene que escribir antes al bot; luego pulsa «Buscar».",
+          errors.telegram_chat_id),
         isPerson ? field("notify", "Notificación de la app HA", notify, "Con botón «Lo atiendo» (no desarma la alarma).", errors.notify_service) : null)),
 
     el("section", { class: "card", "aria-labelledby": "llamada-h" },
@@ -598,8 +635,28 @@ function showSettings(draft = null, errors = {}) {
   message.addEventListener("input", updatePreview);
   updatePreview();
 
+  const secretsSet = (STATE.settings.secrets_set || {});
+  const smtpHost = el("input", { id: "smtp_host", type: "text", value: st.smtp_host || "", placeholder: "smtp.gmail.com", autocomplete: "off" });
+  const smtpPort = num("smtp_port", st.smtp_port || 587, 1, 65535);
+  const smtpSecurity = el("select", { id: "smtp_security" },
+    [["starttls", "STARTTLS (normalmente puerto 587)"], ["ssl", "SSL/TLS (normalmente puerto 465)"], ["none", "Sin cifrar"]]
+      .map(([v, t]) => el("option", { value: v, selected: (st.smtp_security || "starttls") === v }, t)));
+  const smtpUser = el("input", { id: "smtp_user", type: "text", value: st.smtp_user || "", autocomplete: "off" });
+  const smtpPassword = el("input", { id: "smtp_password", type: "password", value: "", autocomplete: "new-password",
+    placeholder: secretsSet.smtp_password ? "Guardada · escribe para cambiarla" : "" });
+  const smtpFrom = el("input", { id: "smtp_from", type: "email", value: st.smtp_from || "", placeholder: "Si se deja vacío, el usuario", autocomplete: "off" });
+  const mailTo = el("input", { type: "email", placeholder: "Correo de prueba a…", autocomplete: "off" });
+  const tgToken = el("input", { id: "telegram_token", type: "password", value: "", autocomplete: "new-password",
+    placeholder: secretsSet.telegram_token ? "Guardado · escribe para cambiarlo" : "123456789:ABC…" });
+  const clearPw = el("input", { type: "checkbox" });
+  const clearTg = el("input", { type: "checkbox" });
+
   function collect() {
     return {
+      smtp_host: smtpHost.value.trim(), smtp_port: Number(smtpPort.value), smtp_security: smtpSecurity.value,
+      smtp_user: smtpUser.value.trim(), smtp_from: smtpFrom.value.trim(),
+      smtp_password: clearPw.checked ? null : smtpPassword.value,
+      telegram_token: clearTg.checked ? null : tgToken.value.trim(),
       message: message.value, confirm_text: confirmText.value,
       detect_voicemail: detectVm.checked, voicemail_message: vmMessage.value,
       call_delay: Number(callDelay.value), external_notify_delay: Number(externalDelay.value),
@@ -650,7 +707,7 @@ function showSettings(draft = null, errors = {}) {
       el("h2", { id: "espera-h", style: "font-size:17px" }, "Antes de avisar"),
       el("div", { class: "grid" },
         field("call_delay", "Espera antes de empezar a llamar (s)", callDelay, "Si alguien desarma la alarma en este tiempo, no se llama a nadie. 0 = llamar al momento.", errors.call_delay),
-        field("external_notify_delay", "Espera antes de avisar a contactos externos (s)", externalDelay, "Telegram y correo. La notificación de la app de HA a la familia es inmediata.", errors.external_notify_delay)),
+        field("external_notify_delay", "Espera antes de avisar por Telegram y correo (s)", externalDelay, "Si se desarma antes, no se envía nada por estos canales. La notificación de la app de HA es inmediata.", errors.external_notify_delay)),
       el("div", { class: "banner info" }, "Si lo que pasa es que la alarma salta al entrar antes de poder desarmarla, lo mejor es ajustar también el retardo de entrada de Alarmo: si se desarma durante ese retardo, la alarma ni siquiera llega a dispararse.")),
 
     el("section", { class: "card", "aria-labelledby": "cadena-h" },
@@ -695,6 +752,26 @@ function showSettings(draft = null, errors = {}) {
         field("post_minutes", "Seguir registrando después del desarme (min)", post, "0: se cierra al desarmar.", errors.post_minutes),
         field("max_open_minutes", "Cerrar si nadie desarma tras (min)", maxOpen, null, errors.max_open_minutes)),
       field("incident_entities", "Sensores que se añaden a la cronología", entities, "Un entity_id por línea: puertas, ventanas, movimiento, cerraduras, personas…", errors.incident_entities)),
+
+    el("section", { class: "card", "aria-labelledby": "mail-h" },
+      el("h2", { id: "mail-h", style: "font-size:17px" }, "Correo"),
+      el("span", { class: "small muted" }, "Cuenta desde la que la App envía los avisos y el informe final. Con Gmail u Outlook hace falta una «contraseña de aplicación»."),
+      el("div", { class: "grid" },
+        field("smtp_host", "Servidor", smtpHost, null, errors.smtp_host),
+        field("smtp_port", "Puerto", smtpPort, null, errors.smtp_port),
+        field("smtp_security", "Seguridad", smtpSecurity, null, errors.smtp_security),
+        field("smtp_user", "Usuario", smtpUser, null, errors.smtp_user),
+        field("smtp_password", "Contraseña", smtpPassword, null, errors.smtp_password),
+        field("smtp_from", "Remitente", smtpFrom, null, errors.smtp_from)),
+      secretsSet.smtp_password ? el("label", { class: "check" }, clearPw, "Quitar la contraseña guardada") : null,
+      el("div", { class: "small muted" }, "Guarda los ajustes antes de probar."),
+      withButtons(mailTo, testButton("email", mailTo))),
+
+    el("section", { class: "card", "aria-labelledby": "tg-h" },
+      el("h2", { id: "tg-h", style: "font-size:17px" }, "Telegram"),
+      el("span", { class: "small muted" }, "Crea un bot con @BotFather en Telegram (/newbot) y pega aquí el token que te da. Usa un bot solo para esto: si otra cosa lee sus mensajes, «Buscar» no encontrará los chats."),
+      field("telegram_token", "Token del bot", tgToken, null, errors.telegram_token),
+      secretsSet.telegram_token ? el("label", { class: "check" }, clearTg, "Quitar el token guardado") : null),
 
     el("section", { class: "card", "aria-labelledby": "bridge-h" },
       el("h2", { id: "bridge-h", style: "font-size:17px" }, "Asterisk Realtime Bridge"),

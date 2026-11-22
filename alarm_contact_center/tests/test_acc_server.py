@@ -254,3 +254,64 @@ class MediaRouteTests(unittest.TestCase):
     def test_no_frigate(self):
         self.app.frigate = None
         self.assertEqual(self.get("/api/clip/1795354401.8-abcdef.mp4")[0], 404)
+
+
+class NotifyRouteTests(unittest.TestCase):
+    def setUp(self):
+        import asyncio
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.loop = asyncio.new_event_loop()
+        threading.Thread(target=self.loop.run_forever, daemon=True).start()
+        self.calls = []
+        test = self
+
+        class Tools:
+            async def test(self, channel, to):
+                test.calls.append((channel, to))
+                return {"ok": True}
+
+            async def chats(self):
+                return {"bot": "casa_bot", "chats": [{"id": "42", "name": "Pablo", "type": "private"}]}
+
+        self.store = Store(Path(self.tmp.name) / "c.json")
+        self.app = App(self.store, FakeHA(), loop=self.loop, notify_tools=Tools())
+        self.server = serve(self.app, host="127.0.0.1", port=0, allow_any_client=True)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.tmp.cleanup()
+
+    call = ServerTests.call
+
+    def test_test_and_chats(self):
+        self.assertEqual(self.call("POST", "/api/notify/test", {"channel": "email", "to": "a@example.com"}), (200, {"ok": True}))
+        self.assertEqual(self.calls, [("email", "a@example.com")])
+        status, body = self.call("GET", "/api/telegram/chats")
+        self.assertEqual(body["chats"][0]["id"], "42")
+
+    def test_secrets_not_in_state_or_export_and_kept_on_import(self):
+        token = "123456789:" + "B" * 35
+        self.call("PUT", "/api/settings", {"telegram_token": token, "smtp_host": "smtp.example.com", "smtp_password": "pw"})
+        _, state = self.call("GET", "/api/state")
+        self.assertEqual((state["settings"]["telegram_token"], state["settings"]["smtp_password"]), ("", ""))
+        self.assertTrue(state["settings"]["secrets_set"]["telegram_token"])
+        _, export = self.call("GET", "/api/export")
+        self.assertNotIn("telegram_token", export["settings"])
+        self.assertNotIn("smtp_password", export["settings"])
+        self.call("POST", "/api/import", export)
+        self.assertEqual(self.store.settings()["telegram_token"], token)
+        self.assertEqual(self.store.settings()["smtp_password"], "pw")
+
+    def test_contact_warns_when_channel_not_set_up(self):
+        status, body = self.call("POST", "/api/contacts", {"kind": "external", "name": "Pablo", "phone": "600000003",
+                                                           "telegram_chat_id": "123456789", "email": "p@example.com"})
+        self.assertEqual(status, 201, body)
+        _, state = self.call("GET", "/api/state")
+        warnings = " ".join(state["contacts"][0]["warnings"])
+        self.assertIn("token del bot", warnings)
+        self.assertIn("cuenta de envío", warnings)

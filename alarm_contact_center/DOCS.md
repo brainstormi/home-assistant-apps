@@ -68,13 +68,29 @@ for example `1795354401.831865-vqtljq,1795354411.489668-aradwo`. An automation o
 
 Drills include cameras and sensors too; test calls do not.
 
+## Email and Telegram
+
+Contacts with an email or a Telegram chat are told alongside the calls. Nothing is sent if the alarm is disarmed within **Espera antes de avisar por Telegram y correo** (30 s by default). Drills are sent too, marked as such, only to the contacts taking part; test calls are not.
+
+- **Telegram:** one message per contact with the timeline, edited as the incident goes on (at most every few seconds; edits are silent), a short new message when someone takes charge or nobody does, when the alarm is disarmed and when the incident closes, and the photos of people seen by the cameras as they arrive.
+- **Email:** one when the chain of calls ends, with the timeline so far (who took charge, or that nobody did; not sent when the alarm was disarmed during the calls), and the final report when the incident closes, with the whole timeline and up to 12 photos attached.
+- Photos go only when **Enviar fotos por Telegram y correo** is on. A message that cannot be sent is written in the timeline.
+
+Setting up, in **Ajustes**:
+
+- **Correo:** the SMTP account the App sends from (server, port, STARTTLS/SSL, user, password, sender). Gmail and Outlook need an app password. **Probar** sends a test email.
+- **Telegram:** create a bot with @BotFather (`/newbot`) and paste its token. Use a bot only for this App: the chat finder reads the bot's pending updates, which another program polling the same bot would take first.
+- **Contact:** the email, and the Telegram chat: the person sends any message to the bot, then **Buscar** lists the chats that wrote to it. **Probar** sends a test message.
+
+The SMTP password and the bot token are stored inside the App only: the panel shows whether they are set but never their value, and exports leave them out (an import keeps the ones already stored).
+
 ## Sensor for Assist
 
 When the MQTT integration is set up in Home Assistant, the App publishes (retained, through `mqtt.publish`) the sensor `sensor.alarm_contact_center_incident`, "Último incidente de alarma". Its state is one Spanish sentence about the last real alarm (when, which sensor, who handled it, the last person seen), and its attributes hold the details and the last 20 timeline entries. Expose it to Assist to ask about the last alarm by voice. Drills and test calls are not published.
 
 ## Data
 
-The configuration is stored in `/data/contact_center.json` the last 50 incidents in `/data/incidents.json` and the incidents' photos in `/data/media`, inside the App; both are included in Home Assistant backups. **Ajustes → Copia de la configuración** exports and imports contacts and settings (the file contains phone numbers and emails).
+The configuration is stored in `/data/contact_center.json` the last 50 incidents in `/data/incidents.json` and the incidents' photos in `/data/media`, inside the App; both are included in Home Assistant backups. **Ajustes → Copia de la configuración** exports and imports contacts and settings (the file contains phone numbers and emails, but not the SMTP password nor the bot token).
 
 ## Requirements
 

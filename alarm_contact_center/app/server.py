@@ -23,6 +23,7 @@ from typing import Any
 
 from . import __version__
 from .ha import HomeAssistant
+from .store import SECRET_KEYS, public_settings
 from .store import DEFAULT_CONTACT, ValidationError, Store, clean_contact, clean_settings, contact_warnings, default_bridge_addon
 
 log = logging.getLogger(__name__)
@@ -45,13 +46,18 @@ def _clip_lock(event_id: str) -> threading.Lock:
         return _CLIP_LOCKS.setdefault(event_id, threading.Lock())
 
 
+def export_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in settings.items() if k not in SECRET_KEYS}
+
+
 class App:
     """API logic, kept apart from the HTTP server so it can be tested."""
 
     def __init__(self, store: Store, ha: HomeAssistant, engine: Any = None, loop: asyncio.AbstractEventLoop | None = None,
                  incidents: Any = None, trunk: Any = None, media: Any = None, watcher: Any = None,
-                 frigate: Any = None) -> None:
+                 frigate: Any = None, notify_tools: Any = None) -> None:
         self.store = store
+        self.notify_tools = notify_tools  # PanelTools: test messages, Telegram chats
         self.frigate = frigate  # FrigateAPI: snapshots and clips
         self.media = media  # MediaStore with the incidents' snapshot copies
         self.watcher = watcher  # EntityWatcher: re-subscribed when the settings change
@@ -83,6 +89,16 @@ class App:
     def start_drill(self, contact_ids: list[str], sensor: str) -> dict[str, Any]:
         return self._on_loop("start_drill", contact_ids, sensor)
 
+    def notify_test(self, channel: str, to: str) -> dict[str, Any]:
+        if self.notify_tools is None:
+            raise RuntimeError("Los avisos por correo y Telegram no están disponibles.")
+        return self._on_loop("test", channel, to, timeout=45, target=self.notify_tools)
+
+    def telegram_chats(self) -> dict[str, Any]:
+        if self.notify_tools is None:
+            raise RuntimeError("Telegram no está disponible.")
+        return self._on_loop("chats", timeout=30, target=self.notify_tools)
+
     def simulate_disarm(self) -> None:
         self._on_loop("simulate_disarm")
 
@@ -103,14 +119,17 @@ class App:
 
     def export_config(self) -> dict[str, Any]:
         snap = self.store.snapshot()
-        return {"app": "alarm_contact_center", "version": __version__, "settings": snap["settings"], "contacts": snap["contacts"]}
+        return {"app": "alarm_contact_center", "version": __version__, "settings": export_settings(snap["settings"]), "contacts": snap["contacts"]}
 
     def import_config(self, data: dict[str, Any]) -> dict[str, Any]:
         """Replace contacts and settings with an export. Everything is validated first."""
         if not isinstance(data, dict) or data.get("app") != "alarm_contact_center":
             raise ValueError("No es un fichero exportado de Alarm Contact Center.")
         _, pins = self._context()
-        settings = clean_settings(data.get("settings") or {})
+        # Exports carry no secrets: keep the ones stored here.
+        current = self.store.settings()
+        imported = {k: v for k, v in (data.get("settings") or {}).items() if k not in SECRET_KEYS and k != "secrets_set"}
+        settings = clean_settings({**imported, **{k: current.get(k, "") for k in SECRET_KEYS}})
         contacts: list[dict[str, Any]] = []
         errors: dict[str, str] = {}
         for i, raw in enumerate(data.get("contacts") or []):
@@ -140,12 +159,17 @@ class App:
                 view["name"] = names.get(c["person"], c["name"] or c["person"])
                 view["person_missing"] = c["person"] not in names
             view["warnings"] = contact_warnings(c, pins)
+            settings = self.store.settings()
+            if c["telegram_chat_id"] and not settings.get("telegram_token"):
+                view["warnings"].append("Tiene Telegram, pero falta el token del bot en Ajustes → Telegram.")
+            if c["email"] and not settings.get("smtp_host"):
+                view["warnings"].append("Tiene correo, pero falta la cuenta de envío en Ajustes → Correo.")
             if view.get("person_missing"):
                 view["warnings"].insert(0, "Esta persona ya no existe en Home Assistant.")
             contacts.append(view)
         return {
             "version": __version__,
-            "settings": self.store.settings(),
+            "settings": public_settings(self.store.settings()),
             "contacts": contacts,
             "persons": persons,
             "notify_targets": self.ha.notify_targets(),
@@ -442,6 +466,11 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
                 self._snapshot("", parts[1][:-4])
             elif method == "GET" and len(parts) == 2 and parts[0] == "clip" and parts[1].endswith(".mp4"):
                 self._clip(parts[1][:-4])
+            elif method == "POST" and parts == ["notify", "test"]:
+                body = self._read_json()
+                self._send_json(app.notify_test(str(body.get("channel") or ""), str(body.get("to") or "")))
+            elif method == "GET" and parts == ["telegram", "chats"]:
+                self._send_json(app.telegram_chats())
             elif method == "GET" and parts == ["export"]:
                 self._send_json(app.export_config())
             elif method == "POST" and parts == ["import"]:
@@ -490,6 +519,7 @@ async def _run() -> None:
     from .engine import Engine, IncidentLog
     from .ha_ws import EntityWatcher, HAConnection, HAPort, wire
     from .media import MediaStore
+    from .notify import Notifier, PanelTools
     from .report import Reporter
     from .trunk import TrunkMonitor
 
@@ -505,8 +535,10 @@ async def _run() -> None:
     reporter = Reporter(port_.mqtt_publish, incidents)
     reporter.load()
     engine.listeners.append(reporter.on_change)
+    notifier = Notifier(store, media)
+    engine.listeners.append(notifier.on_change)
     loop = asyncio.get_running_loop()
-    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate)
+    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate, PanelTools(store))
 
     allow_any = os.environ.get("ACC_ALLOW_ANY_CLIENT") == "1"
     port = int(os.environ.get("ACC_PORT", "8099"))
