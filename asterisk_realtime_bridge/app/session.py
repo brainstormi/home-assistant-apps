@@ -47,6 +47,7 @@ from .config import PROFILE_MANAGE, PROFILE_QUERY, Config, key_name
 from .pins import CallAuth
 from .g711 import slin_to_ulaw, ulaw_to_slin
 from .outbound import OutboundCall
+from .stt import rms
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,11 @@ FLUSH_GRACE_S = 0.6
 CONFIRM_KEY_WAIT_S = 2.0
 # Audio queued before playback starts (and restarts after running dry).
 PREBUFFER_MS = 200
+# Voicemail: the message is left once the phone has been quiet this long (the
+# greeting and its beep are over), waiting at most VOICEMAIL_MAX_WAIT_S.
+FAR_VOICE_RMS = 400
+VOICEMAIL_QUIET_S = 1.5
+VOICEMAIL_MAX_WAIT_S = 20.0
 
 # 20 ms of digital silence. Asterisk's AudioSocket application hangs up if it
 # sees no activity (from the channel or from the server) for 2000 ms, and some
@@ -177,7 +183,7 @@ def build_tools(
                 "name": "report_voicemail",
                 "description": (
                     "The call was answered by a voicemail or an answering machine, "
-                    "not by a person. Call it at once; then do exactly what it returns."
+                    "not by a person. Call it at once, without saying anything first."
                 ),
                 "parameters": {"type": "object", "properties": {}},
             }
@@ -295,8 +301,10 @@ class CallSession:
         outbound: OutboundCall | None = None,
         status: _Status | None = None,
         auth: CallAuth | None = None,
+        voice: Any = None,
     ) -> None:
         self.cfg = cfg
+        self.voice = voice  # fallback TTS (Fallback): leaves the voicemail message
         self.call_id = call_id
         self.reader = reader
         self.writer = writer
@@ -348,6 +356,7 @@ class CallSession:
         self.resolved = False  # Home Assistant closed the notice with a note (resolve)
         self.silence_ended = False  # hung up because nobody answered
         self.voicemail = False  # the assistant recognised a voicemail
+        self._far_voice = 0.0  # loop time of the last loud audio from the phone
         self.voicemail_message_left = False
         self.openai_error = ""  # last error code sent by OpenAI
 
@@ -431,7 +440,9 @@ class CallSession:
                 log.info("[%s] Asterisk closed the connection", self.call_id)
                 return
             if kind == KIND_AUDIO:
-                if self._ready.is_set():
+                if rms(payload) > FAR_VOICE_RMS:
+                    self._far_voice = asyncio.get_running_loop().time()
+                if self._ready.is_set() and not self.voicemail:
                     audio = base64.b64encode(slin_to_ulaw(payload)).decode("ascii")
                     await self._send({"type": "input_audio_buffer.append", "audio": audio})
             elif kind == KIND_DTMF:
@@ -471,6 +482,8 @@ class CallSession:
         elif kind == "response.output_audio.delta":
             if event.get("response_id") and event["response_id"] in self._dropped:
                 return  # audio of a response cut short by a resolving note
+            if self.voicemail:
+                return  # the bridge is leaving the voicemail message
             self._touch()
             self._deliver_audio(event.get("item_id", ""), base64.b64decode(event.get("delta", "")))
         elif kind == "response.output_audio.done":
@@ -646,6 +659,8 @@ class CallSession:
                     },
                 }
             )
+        if self.voicemail:
+            return  # the bridge leaves the message and hangs up: no more replies
         if self._hangup_pending and only_hangup:
             await self._finish_after_drain()
         else:
@@ -867,18 +882,54 @@ class CallSession:
         return True
 
     def _on_voicemail(self) -> dict[str, Any]:
+        """The assistant heard a voicemail: the bridge takes over and hangs up.
+
+        The message is left by the bridge itself (exact text, fallback voice),
+        after the greeting and its beep: once the phone has been quiet for
+        ``VOICEMAIL_QUIET_S``.
+        """
         log.info("[%s] the assistant recognised a voicemail", self.call_id)
         self.voicemail = True
         self._hangup_pending = True
+        self._spawn(self._leave_voicemail())
+        return {"ok": True, "instruction": "Say nothing more. The call is being closed."}
+
+    async def _leave_voicemail(self) -> None:
+        if self._response_active:
+            if self._response_id:
+                self._dropped.add(self._response_id)
+            await self._send({"type": "response.cancel"})
+        await self._interrupt()
         message = self.outbound.voicemail_message if self.outbound else ""
-        if message:
-            self.voicemail_message_left = True
-            return {
-                "ok": True,
-                "instruction": "Say exactly this message, once, and nothing else: "
-                f"{json.dumps(message, ensure_ascii=False)}. Then call hang_up.",
-            }
-        return {"ok": True, "instruction": "Say nothing more and call hang_up now."}
+        if message and self.voice is not None and getattr(self.voice, "enabled", False):
+            try:
+                pcm = await self.voice.audio(message)
+            except Exception as err:  # noqa: BLE001
+                log.warning("[%s] could not prepare the voicemail message: %r", self.call_id, err)
+                pcm = b""
+            if pcm:
+                await self._wait_for_quiet()
+                for i in range(0, len(pcm), FRAME_BYTES):
+                    frame = pcm[i:i + FRAME_BYTES]
+                    self._out.append(("voicemail", frame + bytes(FRAME_BYTES - len(frame))))
+                self._audio_done.add("voicemail")
+                while self._out:
+                    await asyncio.sleep(0.05)
+                self.voicemail_message_left = True
+                log.info("[%s] voicemail message left", self.call_id)
+        elif message:
+            log.warning("[%s] voicemail_message needs fallback_tts: no message left", self.call_id)
+        await asyncio.sleep(FLUSH_GRACE_S)
+        self._finished.set()
+
+    async def _wait_for_quiet(self) -> None:
+        """Wait until the greeting (and its beep) is over."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + VOICEMAIL_MAX_WAIT_S
+        while loop.time() < deadline:
+            if loop.time() - self._far_voice >= VOICEMAIL_QUIET_S:
+                return
+            await asyncio.sleep(0.1)
 
     # ------------------------------------------------------------ silence
     def _touch(self) -> None:

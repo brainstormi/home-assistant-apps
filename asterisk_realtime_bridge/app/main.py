@@ -319,6 +319,7 @@ class Bridge:
                         session = CallSession(
                             self.cfg, call_id, reader, writer, ws, self.home,
                             outbound=outbound, status=self.status, auth=auth,
+                            voice=self.fallback,
                         )
                         live.handler = session
                         await session.run(terminate=False)

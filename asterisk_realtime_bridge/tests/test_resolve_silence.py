@@ -28,14 +28,14 @@ CALL_ID = "0b6c3a52-7f0e-4d3c-9a51-2f5d8e9a1c07"
 
 
 class RealtimeTests(unittest.IsolatedAsyncioTestCase):
-    async def start(self, cfg=None, **options):
+    async def start(self, cfg=None, voice=None, **options):
         self.cfg = cfg or Config(openai_api_key="k", pin="1111", max_call_seconds=20, silence_seconds=0)
         self.ws, self.writer = FakeWS(), FakeWriter()
         self.reader = asyncio.StreamReader()
         options.setdefault("confirm", "voice")
         self.session = CallSession(self.cfg, "out", self.reader, self.writer, self.ws, FakeHome(),
                                    outbound=OutboundCall(CALL_ID, "Alarm.", "QueryOnly", **options),
-                                   status=FakeStatus())
+                                   status=FakeStatus(), voice=voice)
         self.task = asyncio.create_task(self.session.run())
         await asyncio.sleep(0.01)
         self.ws.push({"type": "session.updated"})
@@ -239,22 +239,33 @@ class AssistantVoicemailTests(RealtimeTests):
         self.assertNotIn("report_voicemail", self.tools())
         self.assertNotIn("report_voicemail", self.ws.sent[0]["session"]["instructions"])
 
-    async def test_voicemail_with_message(self):
-        await self.start(detect_voicemail=True, voicemail_message="Call home.")
+    async def test_voicemail_message_is_left_by_the_bridge_after_the_greeting(self):
+        class Voice:
+            enabled = True
+
+            async def audio(self, text):
+                self.text = text
+                return bytes(3200)  # 200 ms
+
+        voice = Voice()
+        await self.start(voice=voice, detect_voicemail=True, voicemail_message="Call home.")
         self.assertIn("report_voicemail", self.tools())
         self.assertIn("Live Voicemail", self.ws.sent[0]["session"]["instructions"])
+        loud = (b"\xff\x3f" * 160)  # the greeting is still playing
+        self.reader.feed_data(pack_frame(KIND_AUDIO, loud))
+        creates = len(self.ws.of_type("response.create"))
         self.ws.push(call("report_voicemail", {}, "v1"))
-        await asyncio.sleep(0.05)
-        out = self.ws.tool_outputs()[-1]
-        self.assertIn('"Call home."', out["instruction"])
+        await asyncio.sleep(0.5)
+        self.assertFalse(self.session.voicemail_message_left, "waits for the greeting to end")
+        await asyncio.wait_for(self.task, 5)
+        self.assertEqual(voice.text, "Call home.")
         self.assertTrue(self.session.voicemail and self.session.voicemail_message_left)
-        self.assertTrue(self.session._hangup_pending)
+        self.assertEqual(len(self.ws.of_type("response.create")), creates, "the assistant says nothing more")
 
     async def test_voicemail_result(self):
         await self.start(detect_voicemail=True)
         self.ws.push(call("report_voicemail", {}, "v1"))
-        await asyncio.sleep(0.05)
-        self.assertIn("call hang_up now", self.ws.tool_outputs()[-1]["instruction"])
+        await asyncio.wait_for(self.task, 5)
         bridge = test_main.main.Bridge(Config(openai_api_key="k", pin="1234"), http=None)
         data = bridge._ended(CALL_ID, self.session.outbound, self.session, 5)
         await bridge.close()

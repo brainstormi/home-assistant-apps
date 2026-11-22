@@ -153,8 +153,9 @@ VOICEMAIL_RULES = (
     "- If the call is answered by a voicemail or an answering machine (a recorded "
     "greeting, an invitation to leave a message, a beep, or an automatic call "
     "screening that asks who is calling, such as Live Voicemail), do not deliver "
-    "the notice as if to a person: call the report_voicemail tool at once and "
-    "follow what it returns. A real person who answers is never a voicemail."
+    "the notice as if to a person and do not say anything: call the "
+    "report_voicemail tool at once, in silence. The message for the voicemail is "
+    "left for you. A real person who answers is never a voicemail."
 )
 
 
