@@ -217,3 +217,48 @@ class PositionTests(unittest.TestCase):
         self.assertEqual(describe_position("Puerta Principal", "on", "door"), ("Puerta Principal", ""))
         self.assertEqual(describe_position("Movimiento abierto", "on", "motion"), ("Movimiento abierto", ""))
         self.assertEqual(describe_position("Cerrada", "on", "door"), ("Cerrada", ""))
+
+
+class AfterCloseTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "c.json")
+        self.store.save_settings({"call_delay": 0, "rounds": 1, "post_minutes": 10,
+                                  "incident_entities": ["binary_sensor.ventana"]})
+        self.store.save_contact({"kind": "external", "name": "Pablo", "phone": "600000003"}, PinStatus("none", []))
+        self.log = IncidentLog(Path(self.tmp.name) / "i.json")
+
+    async def asyncTearDown(self):
+        self.tmp.cleanup()
+
+    async def run_alarm(self):
+        engine = Engine(self.store, MediaPort({"600000003": [{"resultado": "confirmed"}]}), self.log, time_scale=0,
+                        media=MediaStore(Path(self.tmp.name) / "m"))
+        engine.frigate.set_helpers({"input_text.a": "Portal"})
+        await engine.on_alarm_state("armed_away")
+        await engine.on_alarm_state("triggered", TRIGGER)
+        await engine.current.task
+        return engine
+
+    async def test_events_after_the_end_are_kept_and_saved(self):
+        engine = await self.run_alarm()
+        inc = engine.current
+        self.assertEqual(inc.status, "acknowledged")
+        self.assertIsNotNone(inc.to_dict()["recording_until"])
+        await engine.on_watched_entity("binary_sensor.ventana", {"state": "on", "attributes": {"friendly_name": "Ventana", "device_class": "window"}}, {"state": "off"})
+        await engine.on_person_helper("input_text.a", f"{time.time():.6f}-later1,{time.time():.6f}-det009")
+        last_two = inc.events[-2:]
+        self.assertEqual([e["text"] for e in last_two], ["Ventana: se abre", "Persona en Portal"])
+        self.assertTrue(all("después del cierre" in e["detail"] for e in last_two))
+        saved = self.log.items()[0]
+        self.assertEqual(saved["events"][-1]["text"], "Persona en Portal")
+        self.assertFalse(saved["active"])
+
+    async def test_window_over_or_disabled(self):
+        self.store.save_settings({"post_minutes": 0})
+        engine = await self.run_alarm()
+        inc = engine.current
+        self.assertIsNone(inc.to_dict()["recording_until"])
+        n = len(inc.events)
+        await engine.on_watched_entity("binary_sensor.ventana", {"state": "on", "attributes": {"device_class": "window"}}, {"state": "off"})
+        self.assertEqual(len(inc.events), n)

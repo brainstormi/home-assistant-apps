@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+
+- Cameras and sensors keep going into the incident for a set time after someone takes charge, the alarm is disarmed or the chain ends (Ajustes → Registro del incidente, default 10 minutes, 0 to turn it off). Those entries are marked "después del cierre"; the incident page says until when it keeps recording.
+- Incident sensor entries no longer show the entity id under the text.
+
 ## 0.5.6
 
 - The panel loads its scripts and styles with the App version in the URL, so browsers and the HA mobile app no longer keep an old panel after an update.

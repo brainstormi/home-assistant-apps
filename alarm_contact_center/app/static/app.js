@@ -574,6 +574,7 @@ function showSettings(draft = null, errors = {}) {
     finally { trunkBtn.disabled = false; }
   } }, "Probar la troncal ahora");
   const pre = num("frigate_pre_minutes", st.frigate_pre_minutes, 0, 30);
+  const post = num("post_minutes", st.post_minutes, 0, 60);
   const retention = num("media_retention_days", st.media_retention_days, 7, 365);
   const photos = el("input", { id: "send_photos_external", type: "checkbox", checked: st.send_photos_external });
   const helpers = el("textarea", { id: "person_entities", rows: "3", placeholder: "input_text.persona_huerto" }, (st.person_entities || []).join("\n"));
@@ -603,7 +604,7 @@ function showSettings(draft = null, errors = {}) {
       trunk_test_hour: Number(trunkHour.value), trunk_test_number: trunkNumber.value,
       trunk_entity: trunkEntity.value, ami_entity: amiEntity.value,
       flap_alert_count: Number(flapCount.value), flap_window_min: Number(flapWindow.value),
-      frigate_pre_minutes: Number(pre.value), media_retention_days: Number(retention.value),
+      frigate_pre_minutes: Number(pre.value), post_minutes: Number(post.value), media_retention_days: Number(retention.value),
       send_photos_external: photos.checked,
       incident_entities: entities.value.split(/[\s,]+/).filter(Boolean),
       person_entities: helpers.value.split(/[\s,]+/).filter(Boolean),
@@ -683,6 +684,8 @@ function showSettings(draft = null, errors = {}) {
 
     el("section", { class: "card", "aria-labelledby": "inc-h" },
       el("h2", { id: "inc-h", style: "font-size:17px" }, "Registro del incidente"),
+      field("post_minutes", "Seguir registrando después del cierre (min)", post,
+        "Cámaras y sensores siguen entrando en la cronología estos minutos después de que alguien atienda, se desarme o terminen los avisos. 0: no.", errors.post_minutes),
       field("incident_entities", "Sensores que se añaden a la cronología", entities, "Un entity_id por línea: puertas, ventanas, movimiento, cerraduras, personas…", errors.incident_entities)),
 
     el("section", { class: "card", "aria-labelledby": "bridge-h" },
@@ -767,7 +770,8 @@ async function showIncidents(selectedId = null) {
   const detail = selected ? el("section", { class: "card", style: "flex:999 1 560px;min-width:0", "aria-labelledby": "inc-det-h" },
     el("h2", { id: "inc-det-h" }, `${fmtTime(selected.started)} · ${selected.sensor}`),
     el("span", { class: "muted" }, `${KIND_LABEL[selected.kind] || selected.kind} · ${STATUS_TEXT[selected.status] || selected.status}` +
-      (selected.acknowledged_by ? ` · atendida por ${selected.acknowledged_by} (${selected.ack_via})` : "") + (selected.active ? " · en curso" : "")),
+      (selected.acknowledged_by ? ` · atendida por ${selected.acknowledged_by} (${selected.ack_via})` : "") + (selected.active ? " · en curso" : "") +
+      (!selected.active && selected.recording_until ? ` · sigue registrando cámaras y sensores hasta las ${fmtTime(selected.recording_until).split(", ").pop()}` : "")),
     personGallery(selected),
     el("ol", { class: "timeline" }, selected.events.map((e) => el("li", {},
       el("span", { class: "dot " + (KIND_COLOR[e.kind] || ""), "aria-hidden": "true" }),
@@ -775,7 +779,7 @@ async function showIncidents(selectedId = null) {
         e.detail ? el("div", { class: "small muted" }, e.detail) : null,
         e.media && e.media.event_id ? thumb(selected.id, e.media, e.text, fmtTime(e.t)) : null))))) : null;
   render(el("div", { style: "display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start" }, list, detail));
-  if (selected && selected.active) incidentTimer = setTimeout(() => showIncidents(selected.id), 3000);
+  if (selected && (selected.active || selected.recording_until)) incidentTimer = setTimeout(() => showIncidents(selected.id), 3000);
 }
 
 // ------------------------------------------------------------ frigate media

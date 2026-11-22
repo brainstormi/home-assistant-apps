@@ -7,6 +7,7 @@ already requires a Home Assistant login and, with ``panel_admin``, an admin user
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import mimetypes
@@ -91,6 +92,9 @@ class App:
         # Only the engine knows what is really running: nothing in the log is active.
         for item in items:
             item["active"] = False
+            until = item.get("recording_until")
+            if until and until <= dt.datetime.now().astimezone().isoformat(timespec="seconds"):
+                item["recording_until"] = None
         if current:
             items = [current] + [i for i in items if i.get("id") != current["id"]]
         return {"current": current if current and current.get("active") else None, "items": items}

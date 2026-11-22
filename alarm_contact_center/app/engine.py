@@ -50,7 +50,8 @@ TRIGGERED_STATE = "triggered"
 TEST_PREFIX = "Esto es una prueba de Alarm Contact Center. "
 DRILL_PREFIX = "Esto es un simulacro de alarma. "
 SNAPSHOT_WAITS_S = (8, 20, 40)  # when to try copying a snapshot after the alert
-CHAIN_KINDS = ("alarm", "drill")  # incidents that run the full chain
+CHAIN_KINDS = ("alarm", "drill")
+AFTER_CLOSE = "después del cierre"  # incidents that run the full chain
 AFTER_TEXT = {
     "confirmed": "Confirmó el aviso", "answered": "Contestó sin confirmar", "resolved": "Se le informó y colgó",
     "cancelled": "Llamada retirada", "voicemail": "Buzón de voz", "no_answer": "No contestó",
@@ -200,6 +201,7 @@ class Incident:
         self.persons: list[dict[str, Any]] = []  # Frigate person alerts in this incident
         self.media_jobs: set[str] = set()
         self.final: dict[str, Any] | None = None  # set once the chain has ended
+        self.record_until = 0.0  # cameras and sensors are still recorded until then, after the end
         self.on_change: Any = None  # set by the engine: called after every change
 
     def add(self, kind: str, text: str, detail: str = "", t: str | None = None, media: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -232,6 +234,8 @@ class Incident:
             "events": copy.deepcopy(self.events),
             "persons": copy.deepcopy(self.persons),
             "last_person": copy.deepcopy(self.last_person()),
+            "recording_until": dt.datetime.fromtimestamp(self.record_until).astimezone().isoformat(timespec="seconds")
+            if self.record_until > time.time() else None,
         }
 
 
@@ -253,32 +257,52 @@ class Engine:
         """A Frigate person helper changed: the alert goes into the running incident."""
         alert, _ = self.frigate.on_value(entity_id, value)
         inc = self.current
-        if alert and inc and self._active(inc) and inc.kind in CHAIN_KINDS:
-            self._add_person(inc, alert)
+        if alert and self._listening(inc):
+            late = self._late(inc)
+            self._add_person(inc, alert, after=late)
+            if late:
+                self._save_late(inc)
 
-    def _add_person(self, inc: Incident, alert: PersonAlert, before: bool = False) -> None:
+    def _listening(self, inc: Incident | None) -> bool:
+        """Cameras and sensors go into the incident while it runs and for the minutes
+        after it ends set in the settings ("seguir registrando")."""
+        return bool(inc and inc.kind in CHAIN_KINDS and (self._active(inc) or time.time() < inc.record_until))
+
+    @staticmethod
+    def _late(inc: Incident) -> bool:
+        """After someone took charge, the alarm was disarmed or the chain ended."""
+        return inc.stop.is_set() or inc.task is None or inc.task.done()
+
+    def _save_late(self, inc: Incident) -> None:
+        if inc.task is not None and inc.task.done():
+            inc.final = inc.to_dict()
+            self.incidents.save(inc.final)
+
+    def _add_person(self, inc: Incident, alert: PersonAlert, before: bool = False, after: bool = False) -> None:
         existing = next((p for p in inc.persons if p["review_id"] == alert.review_id), None)
         data = alert.to_dict()
         if existing:
             existing.update(data)
             for e in inc.events:
                 if (e.get("media") or {}).get("review_id") == alert.review_id:
-                    e["detail"] = self._person_detail(alert, before)
+                    e["detail"] = self._person_detail(alert, before, "después del cierre" in e["detail"])
                     e["media"]["event_id"] = alert.event_id
             inc.changed()
         else:
             inc.persons.append(data)
             when = dt.datetime.fromtimestamp(alert.start).astimezone().isoformat(timespec="seconds")
-            inc.add("person", f"Persona en {alert.camera}", self._person_detail(alert, before), t=when,
+            inc.add("person", f"Persona en {alert.camera}", self._person_detail(alert, before, after), t=when,
                     media={"review_id": alert.review_id, "event_id": alert.event_id, "camera": alert.camera, "snapshot": False})
         if alert.event_id:
             asyncio.get_running_loop().create_task(self._keep_media(inc, alert))
 
     @staticmethod
-    def _person_detail(alert: PersonAlert, before: bool) -> str:
+    def _person_detail(alert: PersonAlert, before: bool, after: bool = False) -> str:
         parts = ["Alerta de Frigate"]
         if before:
             parts.append("antes del disparo")
+        if after:
+            parts.append(AFTER_CLOSE)
         return " · ".join(parts)
 
     async def _keep_media(self, inc: Incident, alert: PersonAlert) -> None:
@@ -322,7 +346,7 @@ class Engine:
     async def on_watched_entity(self, entity_id: str, new: dict[str, Any], old: dict[str, Any] | None = None) -> None:
         """Sensors listed in the settings: their changes go into the running incident."""
         inc = self.current
-        if not (inc and self._active(inc) and inc.kind in CHAIN_KINDS):
+        if not self._listening(inc):
             return
         if entity_id not in self.store.settings()["incident_entities"]:
             return
@@ -335,7 +359,10 @@ class Engine:
         if not text:
             text = describe_change(entity_id, state, str(attrs.get("device_class") or ""))
         if text:
-            inc.add("sensor", f"{name}: {text}", entity_id)
+            late = self._late(inc)
+            inc.add("sensor", f"{name}: {text}", AFTER_CLOSE if late else "")
+            if late:
+                self._save_late(inc)
 
     # ------------------------------------------------------------- inputs
     async def on_alarm_state(self, state: str, attributes: dict[str, Any] | None = None, restarted: bool = False) -> None:
@@ -524,6 +551,8 @@ class Engine:
             with contextlib.suppress(Exception):
                 await self._notify_household(inc, "Error en los avisos", "La cadena de llamadas ha fallado. Revisa la alarma.")
         finally:
+            if inc.kind in CHAIN_KINDS:
+                inc.record_until = time.time() + self.store.settings()["post_minutes"] * 60
             final = inc.to_dict()
             final["active"] = False  # the task is still running at this point
             self.incidents.save(final)
