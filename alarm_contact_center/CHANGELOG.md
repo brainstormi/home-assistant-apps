@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- A trunk test that goes out but does not come back (`out_only`, typically `BUSY` because the operator refuses calls to the line's own number) is shown as a working line ("Funciona", green). It never alerted; only `failed` or no answer from the Bridge do.
+
 ## 0.4.1
 
 - Registration stability: every drop of the trunk registration or the Asterisk connection is counted, even short ones. Too many drops in a time window (by default 3 in 60 minutes) alert as "Línea telefónica inestable", once per window.

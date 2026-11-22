@@ -83,6 +83,15 @@ class TrunkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(port.notifications, [])
         self.assertTrue(m.status()["bridge_answers"])
 
+    async def test_out_only_busy_is_a_working_line(self):
+        port = FakePort({"result": "out_only", "dialstatus": "BUSY"})
+        m = self.monitor(port)
+        test = await m.run_test()
+        self.assertEqual(test["result"], "out_only")
+        self.assertIn("sale", test["text"])
+        self.assertEqual(port.notifications, [])
+        self.assertFalse(m.status()["test_failing"])
+
     async def test_failure_alerts_once_then_recovers(self):
         port = FakePort({"result": "failed", "dialstatus": "CHANUNAVAIL"})
         m = self.monitor(port)
