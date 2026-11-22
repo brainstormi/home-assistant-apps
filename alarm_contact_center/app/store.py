@@ -75,7 +75,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "smtp_security": "starttls",  # starttls, ssl or none
     "smtp_user": "",
     "smtp_password": "",  # secret
-    "smtp_from": "",
+    "smtp_from": "",  # sender address; empty = the user
+    "smtp_from_name": "Alarma de casa",  # sender name shown in the inbox
     "telegram_token": "",  # secret
     # Empty means DEFAULT_PIN_ENTITY (what the Bridge publishes out of the box).
     "bridge_pin_entity": "",
@@ -322,6 +323,7 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
     s["smtp_from"] = str(s["smtp_from"] or "").strip()
     if s["smtp_from"] and not _EMAIL_RE.match(s["smtp_from"]):
         errors["smtp_from"] = "Correo no válido."
+    s["smtp_from_name"] = str(s["smtp_from_name"] or "").strip().replace("\n", " ")[:60]
     s["telegram_token"] = str(s["telegram_token"] or "").strip()
     if s["telegram_token"] and not re.match(r"^\d{5,}:[A-Za-z0-9_-]{30,}$", s["telegram_token"]):
         errors["telegram_token"] = "No parece un token de bot (lo da @BotFather: 123456:ABC…)."

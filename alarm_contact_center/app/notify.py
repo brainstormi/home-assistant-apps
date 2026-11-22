@@ -29,7 +29,7 @@ import smtplib
 import ssl
 import time
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.utils import formataddr, formatdate, make_msgid
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -196,7 +196,10 @@ def send_email(settings: dict[str, Any], to: str, subject: str, plain: str, body
         raise NotifyError("Falta el servidor de correo (Ajustes → Correo).")
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = settings.get("smtp_from") or settings.get("smtp_user")
+    sender = settings.get("smtp_from") or settings.get("smtp_user")
+    if not sender or "@" not in sender:
+        raise NotifyError("Falta la dirección del remitente (Ajustes → Correo).")
+    msg["From"] = formataddr((settings.get("smtp_from_name") or "", sender))
     msg["To"] = to
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain="alarm-contact-center")

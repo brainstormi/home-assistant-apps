@@ -644,7 +644,8 @@ function showSettings(draft = null, errors = {}) {
   const smtpUser = el("input", { id: "smtp_user", type: "text", value: st.smtp_user || "", autocomplete: "off" });
   const smtpPassword = el("input", { id: "smtp_password", type: "password", value: "", autocomplete: "new-password",
     placeholder: secretsSet.smtp_password ? "Guardada · escribe para cambiarla" : "" });
-  const smtpFrom = el("input", { id: "smtp_from", type: "email", value: st.smtp_from || "", placeholder: "Si se deja vacío, el usuario", autocomplete: "off" });
+  const smtpFrom = el("input", { id: "smtp_from", type: "email", value: st.smtp_from || "", placeholder: "alarma@tudominio.es · vacío: el usuario", autocomplete: "off" });
+  const smtpFromName = el("input", { id: "smtp_from_name", type: "text", value: st.smtp_from_name || "", maxlength: "60", placeholder: "Alarma de casa", autocomplete: "off" });
   const mailTo = el("input", { type: "email", placeholder: "Correo de prueba a…", autocomplete: "off" });
   const tgToken = el("input", { id: "telegram_token", type: "password", value: "", autocomplete: "new-password",
     placeholder: secretsSet.telegram_token ? "Guardado · escribe para cambiarlo" : "123456789:ABC…" });
@@ -654,7 +655,7 @@ function showSettings(draft = null, errors = {}) {
   function collect() {
     return {
       smtp_host: smtpHost.value.trim(), smtp_port: Number(smtpPort.value), smtp_security: smtpSecurity.value,
-      smtp_user: smtpUser.value.trim(), smtp_from: smtpFrom.value.trim(),
+      smtp_user: smtpUser.value.trim(), smtp_from: smtpFrom.value.trim(), smtp_from_name: smtpFromName.value.trim(),
       smtp_password: clearPw.checked ? null : smtpPassword.value,
       telegram_token: clearTg.checked ? null : tgToken.value.trim(),
       message: message.value, confirm_text: confirmText.value,
@@ -762,7 +763,8 @@ function showSettings(draft = null, errors = {}) {
         field("smtp_security", "Seguridad", smtpSecurity, null, errors.smtp_security),
         field("smtp_user", "Usuario", smtpUser, null, errors.smtp_user),
         field("smtp_password", "Contraseña", smtpPassword, null, errors.smtp_password),
-        field("smtp_from", "Remitente", smtpFrom, null, errors.smtp_from)),
+        field("smtp_from_name", "Nombre del remitente", smtpFromName, "Cómo aparece en la bandeja de entrada.", errors.smtp_from_name),
+        field("smtp_from", "Dirección del remitente", smtpFrom, "No hace falta un buzón real: basta con que tu servicio de envío permita esa dirección.", errors.smtp_from)),
       secretsSet.smtp_password ? el("label", { class: "check" }, clearPw, "Quitar la contraseña guardada") : null,
       el("div", { class: "small muted" }, "Guarda los ajustes antes de probar."),
       withButtons(mailTo, testButton("email", mailTo))),
