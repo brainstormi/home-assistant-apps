@@ -48,6 +48,15 @@ class HomeAssistant:
             self._cache[path] = (now, data)
         return data
 
+    def open_frigate(self, event_id: str, name: str, range_header: str = "") -> Any:
+        """Open a Frigate snapshot/clip through the Frigate integration's notification
+        proxy. Returns the urllib response (the caller streams and closes it)."""
+        headers = {"Authorization": f"Bearer {self.token}"}
+        if range_header:
+            headers["Range"] = range_header
+        req = urllib.request.Request(f"{self.base_url}/frigate/notifications/{event_id}/{name}", headers=headers)
+        return urllib.request.urlopen(req, timeout=30)
+
     def states(self) -> list[dict[str, Any]]:
         try:
             return self._get("/states")

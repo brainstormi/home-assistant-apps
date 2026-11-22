@@ -235,6 +235,7 @@ function showHome() {
       el("div", { id: "current-incident" }),
       el("h2", { id: "estado-h" }, "Estado del sistema"),
       statusTiles(s),
+      lastPersonCard(s),
       activeWithCall === 0 ? el("div", { class: "banner warn" }, icon(ICON.warn, 20), "No hay ningún contacto activo con teléfono: nadie recibirá llamadas.") : null,
       s.pins.issues && s.pins.issues.length ? el("div", { class: "banner warn" }, icon(ICON.warn, 20),
         el("div", { style: "flex:1 1 320px;display:flex;flex-direction:column;gap:4px" },
@@ -520,6 +521,14 @@ function showContact(id, draft = null, errors = {}) {
 }
 
 // ------------------------------------------------------------------ settings
+function frigateHelp(s) {
+  const f = s.frigate || {};
+  const found = (f.cameras || []).map((c) => c.name).join(", ");
+  const base = "Los input_text que tu automatización de Frigate rellena con «id_alerta,id_objeto…», uno por línea. ";
+  if (!found) return base + "Vacío: se buscan solos, pero ahora no se encuentra ninguno.";
+  return base + (f.configured ? `Cámaras: ${found}.` : `Vacío: se buscan solos. Encontrados: ${found}.`);
+}
+
 function showSettings(draft = null, errors = {}) {
   setNav("ajustes");
   view.className = "narrow";
@@ -567,6 +576,7 @@ function showSettings(draft = null, errors = {}) {
   const pre = num("frigate_pre_minutes", st.frigate_pre_minutes, 0, 30);
   const retention = num("media_retention_days", st.media_retention_days, 7, 365);
   const photos = el("input", { id: "send_photos_external", type: "checkbox", checked: st.send_photos_external });
+  const helpers = el("textarea", { id: "person_entities", rows: "3", placeholder: "input_text.persona_huerto" }, (st.person_entities || []).join("\n"));
   const entities = el("textarea", { id: "incident_entities", rows: "4", placeholder: "binary_sensor.movimiento_salon_occupancy" }, (st.incident_entities || []).join("\n"));
   const pinEntity = el("input", { id: "bridge_pin_entity", type: "text", value: st.bridge_pin_entity, placeholder: "sensor.asterisk_realtime_bridge_pin (por defecto)" });
 
@@ -595,6 +605,7 @@ function showSettings(draft = null, errors = {}) {
       frigate_pre_minutes: Number(pre.value), media_retention_days: Number(retention.value),
       send_photos_external: photos.checked,
       incident_entities: entities.value.split(/[\s,]+/).filter(Boolean),
+      person_entities: helpers.value.split(/[\s,]+/).filter(Boolean),
       bridge_pin_entity: pinEntity.value,
     };
   }
@@ -662,7 +673,8 @@ function showSettings(draft = null, errors = {}) {
         field("frigate_pre_minutes", "Incluir desde antes del disparo (min)", pre, null, errors.frigate_pre_minutes),
         field("media_retention_days", "Conservar fotos y vídeos (días)", retention, null, errors.media_retention_days),
         el("div", { class: "field" }, el("span", { class: "label" }, "Contactos externos"),
-          el("label", { class: "check" }, photos, "Enviarles fotos por Telegram y correo")))),
+          el("label", { class: "check" }, photos, "Enviarles fotos por Telegram y correo"))),
+      field("person_entities", "Helpers con la última alerta de persona", helpers, frigateHelp(STATE), errors.person_entities)),
 
     el("section", { class: "card", "aria-labelledby": "inc-h" },
       el("h2", { id: "inc-h", style: "font-size:17px" }, "Registro del incidente"),
@@ -721,7 +733,7 @@ async function importConfig(ev) {
 const KIND_LABEL = { alarm: "Alarma", drill: "Simulacro", test: "Prueba", trunk: "Línea" };
 const KIND_COLOR = {
   triggered: "bad", trunk_down: "bad", error: "bad", confirmed: "ok", acknowledged: "ok", disarmed: "ok",
-  trunk_ok: "ok", call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
+  trunk_ok: "ok", person: "bad", sensor: "warn", call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
 };
 
 function fmtTime(iso) {
@@ -751,13 +763,70 @@ async function showIncidents(selectedId = null) {
     el("h2", { id: "inc-det-h" }, `${fmtTime(selected.started)} · ${selected.sensor}`),
     el("span", { class: "muted" }, `${KIND_LABEL[selected.kind] || selected.kind} · ${STATUS_TEXT[selected.status] || selected.status}` +
       (selected.acknowledged_by ? ` · atendida por ${selected.acknowledged_by} (${selected.ack_via})` : "") + (selected.active ? " · en curso" : "")),
+    personGallery(selected),
     el("ol", { class: "timeline" }, selected.events.map((e) => el("li", {},
       el("span", { class: "dot " + (KIND_COLOR[e.kind] || ""), "aria-hidden": "true" }),
       el("div", {}, el("div", {}, el("strong", {}, fmtTime(e.t).split(", ").pop()), " · ", e.text),
-        e.detail ? el("div", { class: "small muted" }, e.detail) : null)))),
-    el("div", { class: "banner info" }, "Las alertas de Frigate con fotos y vídeos se añadirán a esta cronología en la fase 3.")) : null;
+        e.detail ? el("div", { class: "small muted" }, e.detail) : null,
+        e.media && e.media.event_id ? thumb(selected.id, e.media, e.text, fmtTime(e.t)) : null))))) : null;
   render(el("div", { style: "display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start" }, list, detail));
   if (selected && selected.active) incidentTimer = setTimeout(() => showIncidents(selected.id), 3000);
+}
+
+// ------------------------------------------------------------ frigate media
+function snapshotUrl(incidentId, media) {
+  return media.snapshot && incidentId
+    ? `api/media/${encodeURIComponent(incidentId)}/${encodeURIComponent(media.snapshot)}.jpg`
+    : `api/snapshot/${encodeURIComponent(media.event_id)}.jpg`;
+}
+
+function thumb(incidentId, media, title, when, big = false) {
+  const img = el("img", { src: snapshotUrl(incidentId, media), alt: `${title}, ${when}`, loading: "lazy" });
+  img.addEventListener("error", () => img.replaceWith(el("span", { class: "thumb-missing" }, "Foto no disponible")));
+  return el("button", { type: "button", class: "thumb" + (big ? " big" : ""), title: "Ver foto y vídeo",
+    onclick: () => openViewer(incidentId, media, title, when) }, img);
+}
+
+function personGallery(inc) {
+  const persons = inc.persons || [];
+  if (!persons.length) return null;
+  return el("div", { class: "gallery", "aria-label": "Personas vistas por las cámaras" },
+    persons.slice().sort((a, b) => a.start - b.start).map((p) => {
+      const entry = inc.events.find((e) => e.media && e.media.review_id === p.review_id);
+      const when = new Date(p.start * 1000).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      return el("figure", {}, thumb(inc.id, entry ? entry.media : { event_id: p.event_id }, `Persona en ${p.camera}`, when),
+        el("figcaption", { class: "small" }, `${p.camera} · ${when}`));
+    }));
+}
+
+function openViewer(incidentId, media, title, when) {
+  const video = el("div", { class: "viewer-video" },
+    el("button", { class: "btn", type: "button", onclick: () => {
+      const v = el("video", { controls: "", playsinline: "", autoplay: "", src: `api/clip/${encodeURIComponent(media.event_id)}.mp4` });
+      v.addEventListener("error", () => video.replaceChildren(el("span", { class: "muted" }, "Frigate ya no tiene este vídeo.")));
+      video.replaceChildren(v);
+    } }, "Ver vídeo"));
+  const dlg = el("dialog", { class: "viewer", "aria-label": title },
+    el("div", { class: "card-head" }, el("div", { class: "grow" }, el("h2", {}, title), el("span", { class: "small muted" }, when)),
+      el("button", { class: "btn", type: "button", onclick: () => dlg.close() }, "Cerrar")),
+    el("img", { src: snapshotUrl(incidentId, media), alt: `${title}, ${when}` }),
+    video);
+  dlg.addEventListener("close", () => dlg.remove());
+  document.body.append(dlg);
+  dlg.showModal();
+}
+
+function lastPersonCard(s) {
+  const f = s.frigate || {};
+  if (!f.cameras || !f.cameras.length) return null;
+  const last = f.last;
+  if (!last) return el("div", { class: "banner info" }, `Cámaras vigiladas: ${f.cameras.map((c) => c.name).join(", ")}. Sin personas en las últimas horas.`);
+  const when = new Date(last.start * 1000).toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return el("section", { class: "card", "aria-labelledby": "last-person-h", style: "display:flex;gap:16px;align-items:center;flex-wrap:wrap" },
+    last.event_id ? thumb("", { event_id: last.event_id }, `Persona en ${last.camera}`, when) : null,
+    el("div", { class: "grow" }, el("h2", { id: "last-person-h", style: "font-size:16px" }, "Última persona vista"),
+      el("div", {}, `${last.camera} · ${when}`),
+      el("div", { class: "small muted" }, `Cámaras vigiladas: ${f.cameras.map((c) => c.name).join(", ")}`)));
 }
 
 // ------------------------------------------------------------------- router

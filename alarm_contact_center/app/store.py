@@ -65,6 +65,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "media_retention_days": 90,
     "send_photos_external": True,
     "incident_entities": [],
+    "person_entities": [],  # Frigate person helpers (input_text); empty = detect them
     # Empty means DEFAULT_PIN_ENTITY (what the Bridge publishes out of the box).
     "bridge_pin_entity": "",
     # How this installation is wired together.
@@ -287,6 +288,15 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
     if bad:
         errors["incident_entities"] = "Entidades no válidas: " + ", ".join(bad[:3])
     s["incident_entities"] = list(dict.fromkeys(entities))[:50]
+
+    helpers = s["person_entities"]
+    if not isinstance(helpers, list):
+        helpers = []
+    helpers = [str(e).strip() for e in helpers if str(e).strip()]
+    bad = [e for e in helpers if not (e.startswith("input_text.") and _ENTITY_RE.match(e))]
+    if bad:
+        errors["person_entities"] = "Tienen que ser helpers input_text: " + ", ".join(bad[:3])
+    s["person_entities"] = list(dict.fromkeys(helpers))[:20]
 
     s["bridge_pin_entity"] = str(s["bridge_pin_entity"] or "").strip()
     if s["bridge_pin_entity"] and not _ENTITY_RE.match(s["bridge_pin_entity"]):

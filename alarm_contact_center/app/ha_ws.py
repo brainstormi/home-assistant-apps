@@ -20,11 +20,14 @@ from typing import Any, Awaitable, Callable
 import aiohttp
 
 from .engine import Engine
+from .frigate import pick_helpers
 from .store import Store, bridge_addon
 
 log = logging.getLogger(__name__)
 
 WS_URL = os.environ.get("HA_WS_URL", "http://supervisor/core/websocket")
+API_URL = os.environ.get("HA_API_URL", "http://supervisor/core/api").rstrip("/")
+FRIGATE_INSTANCE = os.environ.get("ACC_FRIGATE_INSTANCE", "frigate")  # the integration's default instance id
 CALL_TIMEOUT_S = 1500  # the call script itself gives up after answer time + 900 s
 
 
@@ -125,7 +128,7 @@ class HAConnection:
         finally:
             self._pending.pop(mid, None)
 
-    async def subscribe(self, payload: dict[str, Any], handler: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+    async def subscribe(self, payload: dict[str, Any], handler: Callable[[dict[str, Any]], Awaitable[None]]) -> int:
         ws = self._ws
         if ws is None:
             raise HAError("not connected")
@@ -140,6 +143,14 @@ class HAConnection:
         except Exception:
             self._subscriptions.pop(mid, None)
             raise
+        return mid
+
+    async def unsubscribe(self, mid: int) -> None:
+        if self._subscriptions.pop(mid, None) is not None and self._ws is not None:
+            try:
+                await self.command({"type": "unsubscribe_events", "subscription": mid}, timeout=10)
+            except Exception as err:  # noqa: BLE001
+                log.debug("unsubscribe %s: %s", mid, err)
 
     async def call_service(self, domain: str, service: str, data: dict[str, Any] | None = None,
                            target: dict[str, Any] | None = None, return_response: bool = False,
@@ -193,6 +204,18 @@ class HAPort:
     async def stop_queued_calls(self) -> None:
         await self.conn.call_service("script", "turn_off", target={"entity_id": self.store.settings()["call_script"]})
 
+    async def mqtt_publish(self, topic: str, payload: str, retain: bool = True) -> None:
+        await self.conn.call_service("mqtt", "publish", {"topic": topic, "payload": payload, "retain": retain})
+
+    async def frigate_snapshot(self, event_id: str) -> bytes:
+        """The event snapshot, through the Frigate integration's notification proxy."""
+        return await fetch_frigate_media(event_id, "snapshot.jpg")
+
+    async def frigate_retain(self, event_id: str) -> None:
+        """Ask Frigate to keep the event past its retention (best effort)."""
+        await self.conn.command({"type": "frigate/event/retain", "instance_id": FRIGATE_INSTANCE,
+                                 "event_id": event_id, "retain": True}, timeout=15)
+
     async def friendly_name(self, entity_id: str) -> str:
         states = await self.conn.command({"type": "get_states"})
         for s in states or []:
@@ -201,8 +224,68 @@ class HAPort:
         return entity_id
 
 
-async def wire(conn: HAConnection, engine: Engine, store: Store, trunk: Any = None) -> None:
+async def fetch_frigate_media(event_id: str, name: str, timeout: float = 20) -> bytes:
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    url = f"{API_URL}/frigate/notifications/{event_id}/{name}"
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+        async with session.get(url, headers={"Authorization": f"Bearer {token}"}) as resp:
+            if resp.status != 200:
+                raise HAError(f"HTTP {resp.status}")
+            return await resp.read()
+
+
+class EntityWatcher:
+    """Follows the Frigate person helpers and the incident sensors.
+
+    The list comes from the settings, so it is re-subscribed whenever they are saved.
+    """
+
+    def __init__(self, conn: HAConnection, engine: Engine, store: Store) -> None:
+        self.conn = conn
+        self.engine = engine
+        self.store = store
+        self.sub: int | None = None
+        self.entities: list[str] = []
+
+    async def refresh(self, states: list[dict[str, Any]] | None = None) -> None:
+        if states is None:
+            states = await self.conn.command({"type": "get_states"}) or []
+        settings = self.store.settings()
+        helpers = pick_helpers(settings["person_entities"], states)
+        self.engine.frigate.set_helpers(helpers)
+        entities = sorted(set(helpers) | set(settings["incident_entities"]))
+        if self.sub is not None:
+            await self.conn.unsubscribe(self.sub)
+            self.sub = None
+        self.entities = entities
+        # Whatever the helpers hold now: the alerts of the last hours stay available
+        # for the "before the trigger" part of the next incident.
+        for s in states:
+            if s.get("entity_id") in helpers:
+                self.engine.frigate.on_value(s["entity_id"], str(s.get("state") or ""))
+        if entities:
+            self.sub = await self.conn.subscribe(
+                {"type": "subscribe_trigger", "trigger": {"platform": "state", "entity_id": entities}}, self._on_state)
+        log.info("Following %d Frigate person helper(s) and %d incident sensor(s)",
+                 len(helpers), len(settings["incident_entities"]))
+
+    async def _on_state(self, event: dict[str, Any]) -> None:
+        trig = (event.get("variables") or {}).get("trigger") or {}
+        new = trig.get("to_state") or {}
+        entity_id = str(trig.get("entity_id") or new.get("entity_id") or "")
+        if not new:
+            return
+        if entity_id in self.engine.frigate.cameras:
+            await self.engine.on_person_helper(entity_id, str(new.get("state") or ""))
+        if entity_id in self.store.settings()["incident_entities"]:
+            await self.engine.on_watched_entity(entity_id, new, trig.get("from_state"))
+
+
+async def wire(conn: HAConnection, engine: Engine, store: Store, trunk: Any = None,
+               watcher: EntityWatcher | None = None, reporter: Any = None) -> None:
     """(Re)subscribe everything after each connection and catch up on the current states."""
+    watcher = watcher or EntityWatcher(conn, engine, store)
+    watcher.sub = None  # a new connection has no subscriptions yet
     settings = store.settings()
     alarm_entity = settings["alarm_entity"]
     watched = [settings["trunk_entity"], settings["ami_entity"]] if trunk is not None else []
@@ -239,6 +322,7 @@ async def wire(conn: HAConnection, engine: Engine, store: Store, trunk: Any = No
 
     # Catch up: the alarm may have triggered while we were disconnected or restarting.
     states = await conn.command({"type": "get_states"})
+    await watcher.refresh(states)
     for s in states or []:
         if s.get("entity_id") in watched:
             await trunk.on_entity_state(s["entity_id"], str(s.get("state") or ""))
@@ -248,3 +332,8 @@ async def wire(conn: HAConnection, engine: Engine, store: Store, trunk: Any = No
         await engine.on_alarm_state(str(current.get("state") or ""), current.get("attributes") or {}, restarted=first_time)
     else:
         log.warning("Alarm entity %s not found", alarm_entity)
+    if reporter is not None:
+        try:
+            await reporter.send(force=True)  # the sensor survives HA restarts only if republished
+        except Exception as err:  # noqa: BLE001 - no MQTT integration: the sensor is optional
+            log.warning("Could not publish the incident sensor (is MQTT set up in Home Assistant?): %s", err)
