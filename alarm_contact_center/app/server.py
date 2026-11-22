@@ -55,8 +55,9 @@ class App:
 
     def __init__(self, store: Store, ha: HomeAssistant, engine: Any = None, loop: asyncio.AbstractEventLoop | None = None,
                  incidents: Any = None, trunk: Any = None, media: Any = None, watcher: Any = None,
-                 frigate: Any = None, notify_tools: Any = None) -> None:
+                 frigate: Any = None, notify_tools: Any = None, notifier: Any = None) -> None:
         self.store = store
+        self.notifier = notifier  # Notifier: resending reports
         self.notify_tools = notify_tools  # PanelTools: test messages, Telegram chats
         self.frigate = frigate  # FrigateAPI: snapshots and clips
         self.media = media  # MediaStore with the incidents' snapshot copies
@@ -93,6 +94,14 @@ class App:
         if self.notify_tools is None:
             raise RuntimeError("Los avisos por correo y Telegram no están disponibles.")
         return self._on_loop("test", channel, to, timeout=45, target=self.notify_tools)
+
+    def resend(self, incident_id: str, contact_ids: list[str]) -> dict[str, Any]:
+        if self.notifier is None:
+            raise RuntimeError("Los avisos por correo y Telegram no están disponibles.")
+        item = next((i for i in self.incident_list()["items"] if i.get("id") == incident_id), None)
+        if item is None:
+            raise KeyError(incident_id)
+        return self._on_loop("resend", item, contact_ids, timeout=120, target=self.notifier)
 
     def telegram_chats(self) -> dict[str, Any]:
         if self.notify_tools is None:
@@ -469,6 +478,11 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
             elif method == "POST" and parts == ["notify", "test"]:
                 body = self._read_json()
                 self._send_json(app.notify_test(str(body.get("channel") or ""), str(body.get("to") or "")))
+            elif method == "POST" and len(parts) == 3 and parts[0] == "incidents" and parts[2] == "resend":
+                ids = self._read_json().get("contact_ids")
+                if not isinstance(ids, list):
+                    raise ValueError("Falta la lista de contactos.")
+                self._send_json(app.resend(parts[1], [str(i) for i in ids]))
             elif method == "GET" and parts == ["telegram", "chats"]:
                 self._send_json(app.telegram_chats())
             elif method == "GET" and parts == ["export"]:
@@ -538,7 +552,7 @@ async def _run() -> None:
     notifier = Notifier(store, media, frigate=port_.frigate)
     engine.listeners.append(notifier.on_change)
     loop = asyncio.get_running_loop()
-    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate, PanelTools(store))
+    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate, PanelTools(store), notifier)
 
     allow_any = os.environ.get("ACC_ALLOW_ANY_CLIENT") == "1"
     port = int(os.environ.get("ACC_PORT", "8099"))

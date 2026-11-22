@@ -862,6 +862,7 @@ async function showIncidents(selectedId = null) {
       (selected.acknowledged_by ? ` · atendida por ${selected.acknowledged_by} (${selected.ack_via})` : "") + (selected.active ? " · en curso" : "") +
       (selected.phase === "open" ? " · abierta hasta que se desarme" : "") +
       (selected.phase === "closing" ? ` · desarmada, se sigue registrando hasta las ${fmtTime(selected.recording_until).split(", ").pop()}` : "")),
+    selected.kind !== "test" && selected.phase === "closed" ? resendBox(selected) : null,
     personGallery(selected),
     el("ol", { class: "timeline" }, selected.events.map((e) => el("li", {},
       el("span", { class: "dot " + (KIND_COLOR[e.kind] || ""), "aria-hidden": "true" }),
@@ -870,6 +871,30 @@ async function showIncidents(selectedId = null) {
         e.media && e.media.event_id ? thumb(selected.id, e.media, e.text, fmtTime(e.t)) : null))))) : null;
   render(el("div", { style: "display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start" }, list, detail));
   if (selected && selected.phase && selected.phase !== "closed") incidentTimer = setTimeout(() => showIncidents(selected.id), 3000);
+}
+
+// ------------------------------------------------------------ resend report
+function resendBox(inc) {
+  const people = (STATE.contacts || []).filter((c) => c.email || c.telegram_chat_id);
+  if (!people.length) return null;
+  const chosen = new Set(inc.participants || people.map((c) => c.id));
+  const box = el("div", { class: "banner info", hidden: true },
+    el("span", {}, "Enviar el informe de este incidente a:"),
+    people.map((c) => {
+      const cb = el("input", { type: "checkbox", checked: chosen.has(c.id), onchange: () => (cb.checked ? chosen.add(c.id) : chosen.delete(c.id)) });
+      return el("label", { class: "check" }, cb, `${c.name} (${[c.telegram_chat_id ? "Telegram" : "", c.email ? "correo" : ""].filter(Boolean).join(" y ")})`);
+    }),
+    el("button", { class: "btn primary", type: "button", onclick: async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      try {
+        const r = await api("POST", `api/incidents/${encodeURIComponent(inc.id)}/resend`, { contact_ids: [...chosen] });
+        toast(r.errors.length ? `Enviado con errores: ${r.errors.join("; ")}` : `Enviado: ${r.sent.join(", ")}. Los vídeos llegan después.`, r.errors.length > 0);
+        box.hidden = true;
+      } catch (e) { toast(e.message, true); } finally { btn.disabled = false; }
+    } }, "Enviar"));
+  return el("div", { style: "display:flex;flex-direction:column;gap:8px" },
+    el("div", {}, el("button", { class: "btn", type: "button", onclick: () => (box.hidden = !box.hidden) }, "Reenviar informe")), box);
 }
 
 // ------------------------------------------------------------ frigate media

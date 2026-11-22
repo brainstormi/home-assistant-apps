@@ -253,6 +253,7 @@ class Incident:
             "status": self.status,
             "active": self.task is not None and not self.task.done(),
             "acknowledged_by": self.acknowledged_by,
+            "participants": sorted(self.only_contacts) if self.only_contacts is not None else None,
             "ack_via": self.ack_via,
             "events": copy.deepcopy(self.events),
             "persons": copy.deepcopy(self.persons),
