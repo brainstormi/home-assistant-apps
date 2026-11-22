@@ -55,8 +55,9 @@ class App:
 
     def __init__(self, store: Store, ha: HomeAssistant, engine: Any = None, loop: asyncio.AbstractEventLoop | None = None,
                  incidents: Any = None, trunk: Any = None, media: Any = None, watcher: Any = None,
-                 frigate: Any = None, notify_tools: Any = None, notifier: Any = None) -> None:
+                 frigate: Any = None, notify_tools: Any = None, notifier: Any = None, card: Any = None) -> None:
         self.store = store
+        self.card = card  # CardInstaller: dashboard card status
         self.notifier = notifier  # Notifier: resending reports
         self.notify_tools = notify_tools  # PanelTools: test messages, Telegram chats
         self.frigate = frigate  # FrigateAPI: snapshots and clips
@@ -187,6 +188,7 @@ class App:
                                               "ami": self.store.settings()["ami_entity"]}),
             "trunk": self.trunk.status() if self.trunk is not None else None,
             "frigate": self.frigate_status(),
+            "card": dict(self.card.status) if self.card is not None else None,
             "defaults": {"bridge_addon": default_bridge_addon()},
             "pins": {
                 "mode": pins.mode,
@@ -534,7 +536,8 @@ async def _run() -> None:
     from .ha_ws import EntityWatcher, HAConnection, HAPort, wire
     from .media import MediaStore
     from .notify import Notifier, PanelTools
-    from .report import Reporter
+    from .card import CardInstaller
+    from .report import Reporter, Reporters
     from .trunk import TrunkMonitor
 
     data_dir = Path(os.environ.get("ACC_DATA_DIR", "/data"))
@@ -546,13 +549,15 @@ async def _run() -> None:
     engine = Engine(store, port_, incidents, media=media)
     trunk = TrunkMonitor(store, port_, incidents, engine, data_dir / "trunk.json")
     watcher = EntityWatcher(conn, engine, store)
-    reporter = Reporter(port_.mqtt_publish, incidents)
-    reporter.load()
+    reporter = Reporters([Reporter(port_.mqtt_publish, incidents), Reporter(port_.mqtt_publish, incidents, kind="drill")])
+    for r in reporter:
+        r.load()
     engine.listeners.append(reporter.on_change)
     notifier = Notifier(store, media, frigate=port_.frigate)
     engine.listeners.append(notifier.on_change)
     loop = asyncio.get_running_loop()
-    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate, PanelTools(store), notifier)
+    card = CardInstaller()
+    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate, PanelTools(store), notifier, card)
 
     allow_any = os.environ.get("ACC_ALLOW_ANY_CLIENT") == "1"
     port = int(os.environ.get("ACC_PORT", "8099"))
@@ -562,7 +567,7 @@ async def _run() -> None:
     scheduler = asyncio.create_task(trunk.scheduler())
     cleaner = asyncio.create_task(_clean_media(media, store))
     try:
-        await conn.run(lambda: wire(conn, engine, store, trunk, watcher, reporter))
+        await conn.run(lambda: wire(conn, engine, store, trunk, watcher, reporter, card))
     finally:
         scheduler.cancel()
         cleaner.cancel()

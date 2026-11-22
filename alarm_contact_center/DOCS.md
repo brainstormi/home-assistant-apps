@@ -85,9 +85,24 @@ Setting up, in **Ajustes**:
 
 The SMTP password and the bot token are stored inside the App only: the panel shows whether they are set but never their value, and exports leave them out (an import keeps the ones already stored).
 
+## Dashboard card
+
+The App installs a dashboard card, **Alarm Contact Center** (`custom:alarm-contact-center-card`), with the latest incident: its state (in progress, waiting for the disarm, disarmed and still recording, closed), the summary, the timeline with the same coloured dots as the panel, and the people seen by the cameras; tapping one opens the photo and its video. It works for every household user, in the browser and in the mobile app.
+
+```yaml
+type: custom:alarm-contact-center-card
+entity: sensor.alarm_contact_center_incident   # or sensor.alarm_contact_center_drill to try it with drills
+title: Alarma                                  # optional
+max_entries: 40                                # optional
+```
+
+- **Installation:** at every start the App copies the card to `www/alarm-contact-center/` in the Home Assistant configuration (the only thing it writes there; this is why it asks for access to the configuration folder) and registers it as a dashboard resource, with the version in the URL so updates are picked up. If the `www` folder did not exist, Home Assistant must be restarted once. With dashboards in YAML mode, add the resource by hand: `/local/alarm-contact-center/alarm-contact-center-card.js`, type module. **Ajustes → Dashboard** shows the state.
+- **Photos and videos** come through the Frigate integration's notification proxy (`/api/frigate/notifications/<id>/…`), so it must be enabled in the integration's options.
+- **Al tocar la notificación, abrir** (Ajustes → Dashboard): a dashboard path such as `/alarma/incidente`. The HA app notifications then open that view (on iOS with a normal tap), for example one with this card and the alarm panel card to disarm.
+
 ## Sensor for Assist
 
-When the MQTT integration is set up in Home Assistant, the App publishes (retained, through `mqtt.publish`) the sensor `sensor.alarm_contact_center_incident`, "Último incidente de alarma". Its state is one Spanish sentence about the last real alarm (when, which sensor, who handled it, the last person seen), and its attributes hold the details and the last 20 timeline entries. Expose it to Assist to ask about the last alarm by voice. Drills and test calls are not published.
+When the MQTT integration is set up in Home Assistant, the App publishes (retained, through `mqtt.publish`) the sensor `sensor.alarm_contact_center_incident`, "Último incidente de alarma". Its state is one Spanish sentence about the last real alarm (when, which sensor, who handled it, the last person seen), and its attributes hold the details and the timeline (the card reads them). Expose it to Assist to ask about the last alarm by voice. Drills go to `sensor.alarm_contact_center_drill` instead, which is not meant for Assist; test calls are not published.
 
 ## Data
 

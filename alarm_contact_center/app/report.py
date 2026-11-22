@@ -4,9 +4,12 @@ The App publishes a sensor through MQTT discovery, using Home Assistant's own
 ``mqtt.publish`` action, so it needs no MQTT client or broker credentials:
 
 * ``sensor.alarm_contact_center_incident``: a short Spanish summary of the latest
-  incident as its state (what Assist reads out), the details as attributes.
+  real alarm as its state (what Assist reads out), the details as attributes,
+  including the whole timeline the dashboard card shows.
+* ``sensor.alarm_contact_center_drill``: the same for the latest drill, so the card
+  can be tried without a real alarm. Not meant for Assist.
 
-Drills and test calls are not published: the sensor is about real alarms.
+Test calls are not published.
 """
 
 from __future__ import annotations
@@ -33,16 +36,32 @@ STATUS_TEXT = {
 }
 
 NO_INCIDENT = "Sin alarmas registradas"
+NO_DRILL = "Sin simulacros registrados"
+MAX_EVENTS = 60  # timeline entries in the attributes (they stay well under HA's 16 kB)
+
+# kind -> (key, name, icon)
+SENSORS = {
+    "alarm": ("incident", "Último incidente de alarma", "mdi:shield-alert"),
+    "drill": ("drill", "Último simulacro de alarma", "mdi:shield-check-outline"),
+}
 
 
-def discovery_config() -> dict[str, Any]:
+def topics(kind: str = "alarm") -> tuple[str, str, str]:
+    key = SENSORS[kind][0]
+    return (f"homeassistant/sensor/alarm_contact_center/{key}/config",
+            f"alarm_contact_center/{key}/state", f"alarm_contact_center/{key}/attributes")
+
+
+def discovery_config(kind: str = "alarm") -> dict[str, Any]:
+    key, name, icon = SENSORS[kind]
+    _, state_topic, attr_topic = topics(kind)
     return {
-        "name": "Último incidente de alarma",
-        "unique_id": "alarm_contact_center_incident",
-        "default_entity_id": "sensor.alarm_contact_center_incident",
-        "state_topic": STATE_TOPIC,
-        "json_attributes_topic": ATTR_TOPIC,
-        "icon": "mdi:shield-alert",
+        "name": name,
+        "unique_id": f"alarm_contact_center_{key}",
+        "default_entity_id": f"sensor.alarm_contact_center_{key}",
+        "state_topic": state_topic,
+        "json_attributes_topic": attr_topic,
+        "icon": icon,
         "device": {"identifiers": ["alarm_contact_center"], "name": "Alarm Contact Center",
                    "manufacturer": "Home Assistant Apps by brainstormi", "model": "Alarm Contact Center"},
     }
@@ -69,7 +88,8 @@ def summary(inc: dict[str, Any] | None, now: dt.datetime | None = None) -> str:
     """One sentence, under 255 characters (the limit of a sensor state)."""
     if not inc:
         return NO_INCIDENT
-    parts = [f"Alarma {_when(inc.get('started', ''), now)}".strip()]
+    word = "Simulacro" if inc.get("kind") == "drill" else "Alarma"
+    parts = [f"{word} {_when(inc.get('started', ''), now)}".strip()]
     if inc.get("sensor"):
         parts.append(f"por {inc['sensor']}")
     status = STATUS_TEXT.get(inc.get("status", ""), inc.get("status", ""))
@@ -105,22 +125,40 @@ def attributes(inc: dict[str, Any] | None) -> dict[str, Any]:
         "last_person_time": dt.datetime.fromtimestamp(inc["last_person"]["start"]).astimezone().isoformat(timespec="seconds")
         if inc.get("last_person") else None,
         "timeline": [f"{e['t'][11:16]} {e['text']}" for e in (inc.get("events") or [])][-20:],
+        # For the dashboard card.
+        "kind": inc.get("kind"),
+        "disarmed": bool(inc.get("disarmed")),
+        "recording_until": inc.get("recording_until"),
+        "events": [card_event(e) for e in (inc.get("events") or [])][-MAX_EVENTS:],
     }
 
 
-def messages(inc: dict[str, Any] | None) -> list[tuple[str, str]]:
+def card_event(e: dict[str, Any]) -> dict[str, Any]:
+    media = e.get("media") or {}
+    out = {"t": e.get("t"), "kind": e.get("kind"), "text": e.get("text"),
+           "detail": str(e.get("detail") or "").replace("Alerta de Frigate", "Vista por la cámara")}
+    if media.get("event_id"):
+        out["event_id"] = media["event_id"]
+        out["camera"] = media.get("camera")
+    return out
+
+
+def messages(inc: dict[str, Any] | None, kind: str = "alarm") -> list[tuple[str, str]]:
     """(topic, payload) pairs to publish, all retained."""
+    discovery, state, attrs = topics(kind)
+    state_text = summary(inc) if inc else (NO_DRILL if kind == "drill" else NO_INCIDENT)
     return [
-        (DISCOVERY_TOPIC, json.dumps(discovery_config(), ensure_ascii=False)),
-        (STATE_TOPIC, summary(inc)),
-        (ATTR_TOPIC, json.dumps(attributes(inc), ensure_ascii=False)),
+        (discovery, json.dumps(discovery_config(kind), ensure_ascii=False)),
+        (state, state_text),
+        (attrs, json.dumps(attributes(inc), ensure_ascii=False)),
     ]
 
 
 class Reporter:
-    """Publishes the latest real alarm whenever it changes (coalescing bursts)."""
+    """Publishes the latest alarm (or drill) whenever it changes (coalescing bursts)."""
 
-    def __init__(self, publish: Any, incidents: Any, delay: float = 2.0) -> None:
+    def __init__(self, publish: Any, incidents: Any, delay: float = 2.0, kind: str = "alarm") -> None:
+        self.kind = kind
         self.publish = publish  # async (topic, payload, retain) -> None
         self.incidents = incidents
         self.delay = delay
@@ -130,12 +168,12 @@ class Reporter:
         self._last_sent: list[tuple[str, str]] = []
 
     def load(self) -> None:
-        self.latest = next((i for i in self.incidents.items() if i.get("kind") == "alarm"), None)
+        self.latest = next((i for i in self.incidents.items() if i.get("kind") == self.kind), None)
         if self.latest:
             self.latest["active"] = False
 
     def on_change(self, inc: Any) -> None:
-        if inc.kind != "alarm":
+        if inc.kind != self.kind:
             return
         self._inc = inc
         if self._pending is None or self._pending.done():
@@ -149,9 +187,21 @@ class Reporter:
         inc = self._inc
         if inc is not None:
             self.latest = inc.final or inc.to_dict()
-        msgs = messages(self.latest)
+        msgs = messages(self.latest, self.kind)
         if msgs == self._last_sent and not force:
             return
         for topic, payload in msgs:
             await self.publish(topic, payload, True)
         self._last_sent = msgs
+
+
+class Reporters(list):
+    """The alarm and the drill reporters behind one listener."""
+
+    def on_change(self, inc: Any) -> None:
+        for r in self:
+            r.on_change(inc)
+
+    async def send(self, force: bool = False) -> None:
+        for r in self:
+            await r.send(force)

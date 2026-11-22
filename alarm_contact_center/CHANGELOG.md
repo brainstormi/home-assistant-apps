@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0
+
+- Dashboard card "Alarm Contact Center" (`custom:alarm-contact-center-card`): state, summary, timeline with coloured dots, people seen with photo and video. Installed and registered as a resource by the App (it now maps the Home Assistant configuration folder, only to write `www/alarm-contact-center/`). Visual editor in the dashboard.
+- `sensor.alarm_contact_center_drill`: the latest drill, to try the card; the incident sensors carry the whole timeline for the card.
+- "Al tocar la notificación, abrir": HA app notifications open a dashboard view.
+- The incident no longer reads "calling" for a moment after the calls end.
+
 ## 0.9.2
 
 - Messages to contacts no longer mention Frigate: camera alerts read "Vista por la cámara" (also in the timeline).

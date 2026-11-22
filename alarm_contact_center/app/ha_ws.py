@@ -289,7 +289,7 @@ class EntityWatcher:
 
 
 async def wire(conn: HAConnection, engine: Engine, store: Store, trunk: Any = None,
-               watcher: EntityWatcher | None = None, reporter: Any = None) -> None:
+               watcher: EntityWatcher | None = None, reporter: Any = None, card: Any = None) -> None:
     """(Re)subscribe everything after each connection and catch up on the current states."""
     watcher = watcher or EntityWatcher(conn, engine, store)
     watcher.sub = None  # a new connection has no subscriptions yet
@@ -347,3 +347,8 @@ async def wire(conn: HAConnection, engine: Engine, store: Store, trunk: Any = No
             await reporter.send(force=True)  # the sensor survives HA restarts only if republished
         except Exception as err:  # noqa: BLE001 - no MQTT integration: the sensor is optional
             log.warning("Could not publish the incident sensor (is MQTT set up in Home Assistant?): %s", err)
+    if card is not None:
+        try:
+            await card.run(conn)
+        except Exception as err:  # noqa: BLE001 - the card is optional
+            log.warning("Could not install the dashboard card: %s", err)
