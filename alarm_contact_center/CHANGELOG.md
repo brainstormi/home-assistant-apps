@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.2
+
+- Messages to contacts no longer mention Frigate: camera alerts read "Vista por la cámara" (also in the timeline).
+- Telegram captions say what they are: "📷1 Foto · …" and "🎬1 Vídeo · …".
+- Email photos are named after their entry and time ("Foto 1 - Persona en Entrada 17-27-22.jpg").
+- Menu order: Inicio, Incidentes, Ajustes.
+
 ## 0.9.1
 
 - "Reenviar informe" on a closed incident: sends its timeline, photos and videos by Telegram and the final report by email to the chosen contacts (by default, those who took part).

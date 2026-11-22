@@ -25,6 +25,7 @@ import asyncio
 import datetime as dt
 import html
 import logging
+import re
 import smtplib
 import ssl
 import time
@@ -66,6 +67,11 @@ class NotifyError(Exception):
 
 
 # --------------------------------------------------------------------- render
+def _detail(e: dict[str, Any]) -> str:
+    """The entry's detail as contacts see it (older incidents said "Alerta de Frigate")."""
+    return str(e.get("detail") or "").replace("Alerta de Frigate", "Vista por la cámara")
+
+
 def _clock(iso: str) -> str:
     return iso[11:19] if len(iso) >= 19 else iso
 
@@ -86,7 +92,7 @@ def status_line(inc: dict[str, Any]) -> str:
 def timeline_lines(inc: dict[str, Any]) -> list[str]:
     lines = []
     for e in inc.get("events") or []:
-        detail = f" ({e['detail']})" if e.get("detail") else ""
+        detail = f" ({_detail(e)})" if _detail(e) else ""
         lines.append(f"{_clock(e.get('t', ''))}  {e.get('text', '')}{detail}")
     return lines
 
@@ -130,7 +136,7 @@ def telegram_text(inc: dict[str, Any]) -> str:
     for e in inc.get("events") or []:
         n = numbers.get((e.get("media") or {}).get("review_id"))
         tag = f" 📷{n}" if n else ""
-        detail = f" <i>({esc(e['detail'])})</i>" if e.get("detail") else ""
+        detail = f" <i>({esc(_detail(e))})</i>" if _detail(e) else ""
         lines.append(f"{KIND_DOT.get(e.get('kind', ''), '⚪')} <code>{esc(_clock(e.get('t', '')))}</code> {esc(e.get('text', ''))}{tag}{detail}")
     text = "\n".join(head + lines)
     while len(text) > TELEGRAM_MAX and len(lines) > 5:
@@ -139,10 +145,21 @@ def telegram_text(inc: dict[str, Any]) -> str:
     return text[:TELEGRAM_MAX]
 
 
+MEDIA_WORD = {"📷": "Foto", "🎬": "Vídeo"}
+
+
 def media_caption(inc: dict[str, Any], e: dict[str, Any], icon: str) -> str:
+    """'📷1 Foto · Persona en Entrada · 17:27:22 · antes del disparo'."""
     n = media_numbers(inc).get((e.get("media") or {}).get("review_id"), 0)
-    caption = f"{icon}{n} · {e.get('text', '')} · {_clock(e.get('t', ''))}"
-    return caption + (f" · {e['detail']}" if e.get("detail") else "")
+    caption = f"{icon}{n} {MEDIA_WORD.get(icon, '')} · {e.get('text', '')} · {_clock(e.get('t', ''))}"
+    return caption + (f" · {_detail(e)}" if _detail(e) else "")
+
+
+def photo_filename(inc: dict[str, Any], e: dict[str, Any]) -> str:
+    """'Foto 1 - Persona en Entrada 17-27-22.jpg' for email attachments."""
+    n = media_numbers(inc).get((e.get("media") or {}).get("review_id"), 0)
+    name = re.sub(r'[\\/:*?"<>|]+', " ", str(e.get("text") or "")).strip()
+    return f"Foto {n} - {name} {_clock(e.get('t', '')).replace(':', '-')}.jpg"
 
 
 def email_parts(inc: dict[str, Any], final: bool) -> tuple[str, str, str]:
@@ -157,7 +174,7 @@ def email_parts(inc: dict[str, Any], final: bool) -> tuple[str, str, str]:
         f"<tr><td style='padding:2px 6px 2px 0;vertical-align:top'>{KIND_DOT.get(e.get('kind', ''), '⚪')}</td>"
         f"<td style='padding:2px 12px 2px 0;color:#555;white-space:nowrap;vertical-align:top'>{html.escape(_clock(e.get('t', '')))}</td>"
         f"<td style='padding:2px 0'>{html.escape(e.get('text', ''))}"
-        + (f"<br><span style='color:#777;font-size:13px'>{html.escape(e['detail'])}</span>" if e.get("detail") else "")
+        + (f"<br><span style='color:#777;font-size:13px'>{html.escape(_detail(e))}</span>" if _detail(e) else "")
         + "</td></tr>"
         for e in inc.get("events") or [])
     body = (f"<div style='font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:15px;color:#222'>"
@@ -536,7 +553,7 @@ class Notifier:
                 snap = (e.get("media") or {}).get("snapshot")
                 photo = self.media.read(inc.id, snap) if snap else None
                 if photo and len(attachments) < MAX_PHOTOS_EMAIL:
-                    attachments.append((f"{_clock(e['t']).replace(':', '')}-{len(attachments) + 1}.jpg", photo))
+                    attachments.append((photo_filename(data, e), photo))
         for c in to:
             try:
                 await self.mail(c["email"], subject, plain, body, attachments)
@@ -574,7 +591,7 @@ class Notifier:
                         errors.append(f"Telegram a {c['name']}: {err}")
             if c["email"]:
                 subject, plain, body = email_parts(data, final=True)
-                attachments = [(f"{_clock(e['t']).replace(':', '')}-{i + 1}.jpg", p) for i, (e, p) in enumerate(photos[:MAX_PHOTOS_EMAIL])]
+                attachments = [(photo_filename(data, e), p) for e, p in photos[:MAX_PHOTOS_EMAIL]]
                 try:
                     await self.mail(c["email"], "Reenvío · " + subject, plain, body, attachments)
                     sent.append(f"correo a {c['name']}")
