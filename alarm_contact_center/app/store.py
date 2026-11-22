@@ -67,6 +67,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "media_retention_days": 90,
     "send_photos_external": True,
     "send_videos_telegram": True,
+    "notify_url": "",  # dashboard path the HA app notification opens (e.g. /alarma/incidente)
     "incident_entities": [],
     "person_entities": [],  # Frigate person helpers (input_text); empty = detect them
     "frigate_url": "",  # Frigate's API address; empty = taken from the Frigate integration
@@ -295,6 +296,9 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
     s["media_retention_days"] = _int_in(s["media_retention_days"], 7, 365, "media_retention_days", errors)
     s["send_photos_external"] = bool(s["send_photos_external"])
     s["send_videos_telegram"] = bool(s["send_videos_telegram"])
+    s["notify_url"] = str(s["notify_url"] or "").strip()
+    if s["notify_url"] and not re.match(r"^/[A-Za-z0-9_\-./?=&#%]*$", s["notify_url"]):
+        errors["notify_url"] = "Tiene que ser una ruta de Home Assistant que empiece por /, p. ej. /alarma/incidente."
 
     entities = s["incident_entities"]
     if not isinstance(entities, list):

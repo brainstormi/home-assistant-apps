@@ -215,6 +215,7 @@ class Incident:
         self.record_until = 0.0
         self.disarmed_at = 0.0
         self.closed = False
+        self.chain_done = False  # the calls are over (set before the task itself finishes)
         self.wake = asyncio.Event()  # the close time changed
         self.on_change: Any = None  # set by the engine: called after every change
 
@@ -234,7 +235,7 @@ class Incident:
     def phase(self) -> str:
         """calling: the chain runs; open: handled or not, waiting for the disarm;
         closing: disarmed, still recording; closed."""
-        if self.task is not None and not self.task.done():
+        if self.task is not None and not self.task.done() and not self.chain_done:
             return "calling"
         if self.closed or self.kind not in CHAIN_KINDS:
             return "closed"
@@ -592,6 +593,7 @@ class Engine:
             with contextlib.suppress(Exception):
                 await self._notify_household(inc, "Error en los avisos", "La cadena de llamadas ha fallado. Revisa la alarma.")
         finally:
+            inc.chain_done = True
             if inc.kind in CHAIN_KINDS:
                 inc.record_until = self._close_at(inc)
                 if self.time_scale > 0:  # tests close incidents themselves
@@ -884,6 +886,10 @@ class Engine:
             }
             if ack_button:
                 data["actions"] = [{"action": f"{ACK_PREFIX}:{inc.id}:{c['id']}", "title": "Lo atiendo"}]
+            url = self.store.settings()["notify_url"]
+            if url:
+                data["url"] = url  # iOS: tapping the notification opens this dashboard view
+                data["clickAction"] = url  # Android
             try:
                 await self.port.notify(c["notify_service"], title, message, data)
             except Exception as err:  # noqa: BLE001

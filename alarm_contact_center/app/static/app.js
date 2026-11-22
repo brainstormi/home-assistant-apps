@@ -563,6 +563,33 @@ function showContact(id, draft = null, errors = {}) {
 }
 
 // ------------------------------------------------------------------ settings
+const CARD_YAML = `type: custom:alarm-contact-center-card
+entity: sensor.alarm_contact_center_incident`;
+
+function dashboardSection(notifyUrl, errors) {
+  const c = STATE.card || {};
+  let line;
+  if (!STATE.card) line = el("span", { class: "small muted" }, "Estado de la tarjeta desconocido.");
+  else if (c.file === "ok" && c.resource === "ok") line = el("span", { class: "chip ok" }, "Tarjeta instalada y registrada");
+  else if (c.file === "restart") line = el("div", { class: "banner warn" }, icon(ICON.warn, 20), c.detail);
+  else if (c.resource === "manual") line = el("div", { class: "banner warn" }, icon(ICON.warn, 20),
+    el("span", {}, `${c.detail} En Ajustes → Paneles → Recursos: URL `, el("code", {}, c.url), ", tipo módulo de JavaScript."));
+  else if (c.file === "pending" || c.resource === "pending") line = el("span", { class: "small muted" }, "Instalando la tarjeta…");
+  else line = el("div", { class: "banner warn" }, icon(ICON.warn, 20), c.detail || "La tarjeta no se ha podido instalar.");
+  const yaml = el("pre", { class: "readonly", style: "margin:0;white-space:pre-wrap;font-size:13px" }, CARD_YAML);
+  return el("section", { class: "card", "aria-labelledby": "dash-h" },
+    el("h2", { id: "dash-h", style: "font-size:17px" }, "Dashboard"),
+    el("span", { class: "small muted" }, "La App instala la tarjeta «Alarm Contact Center» para tus dashboards: estado del incidente, cronología, fotos y vídeos. Búscala al añadir una tarjeta, o pega esto en una tarjeta manual (para probar con simulacros, usa sensor.alarm_contact_center_drill):"),
+    line,
+    el("div", { style: "display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap" },
+      el("div", { style: "flex:1 1 260px" }, yaml),
+      el("button", { class: "btn", type: "button", onclick: async () => {
+        try { await navigator.clipboard.writeText(CARD_YAML); toast("Copiado."); } catch (_) { toast("No se pudo copiar: selecciónalo a mano.", true); }
+      } }, "Copiar")),
+    field("notify_url", "Al tocar la notificación, abrir", notifyUrl,
+      "Ruta de la vista del dashboard con la tarjeta y el panel de la alarma, p. ej. /alarma/incidente. Vacío: se abre la app sin más.", errors.notify_url));
+}
+
 function frigateHelp(s) {
   const f = s.frigate || {};
   const found = (f.cameras || []).map((c) => c.name).join(", ");
@@ -651,10 +678,12 @@ function showSettings(draft = null, errors = {}) {
   const tgToken = el("input", { id: "telegram_token", type: "password", value: "", autocomplete: "new-password",
     placeholder: secretsSet.telegram_token ? "Guardado · escribe para cambiarlo" : "123456789:ABC…" });
   const clearPw = el("input", { type: "checkbox" });
+  const notifyUrl = el("input", { id: "notify_url", type: "text", value: st.notify_url || "", placeholder: "/alarma/incidente", autocomplete: "off" });
   const clearTg = el("input", { type: "checkbox" });
 
   function collect() {
     return {
+      notify_url: notifyUrl.value.trim(),
       smtp_host: smtpHost.value.trim(), smtp_port: Number(smtpPort.value), smtp_security: smtpSecurity.value,
       smtp_user: smtpUser.value.trim(), smtp_from: smtpFrom.value.trim(), smtp_from_name: smtpFromName.value.trim(),
       smtp_password: clearPw.checked ? null : smtpPassword.value,
@@ -755,6 +784,8 @@ function showSettings(draft = null, errors = {}) {
         field("post_minutes", "Seguir registrando después del desarme (min)", post, "0: se cierra al desarmar.", errors.post_minutes),
         field("max_open_minutes", "Cerrar si nadie desarma tras (min)", maxOpen, null, errors.max_open_minutes)),
       field("incident_entities", "Sensores que se añaden a la cronología", entities, "Un entity_id por línea: puertas, ventanas, movimiento, cerraduras, personas…", errors.incident_entities)),
+
+    dashboardSection(notifyUrl, errors),
 
     el("section", { class: "card", "aria-labelledby": "mail-h" },
       el("h2", { id: "mail-h", style: "font-size:17px" }, "Correo"),
