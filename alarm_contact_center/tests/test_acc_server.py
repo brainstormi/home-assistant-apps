@@ -151,3 +151,88 @@ class ClientFilterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeResponse:
+    def __init__(self, body, status=200, headers=None):
+        self.body = body
+        self.status = status
+        self.headers = headers or {"Content-Type": "video/mp4", "Content-Length": str(len(body))}
+        self._pos = 0
+
+    def read(self, n=-1):
+        chunk = self.body[self._pos:] if n < 0 else self.body[self._pos:self._pos + n]
+        self._pos += len(chunk)
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class MediaHA(FakeHA):
+    def __init__(self):
+        super().__init__()
+        self.opened = []
+
+    def open_frigate(self, event_id, name, range_header=""):
+        self.opened.append((event_id, name, range_header))
+        if event_id.endswith("gone00"):
+            raise urllib.error.HTTPError("u", 404, "nf", {}, None)
+        if range_header:
+            return FakeResponse(b"vi", 206, {"Content-Type": "video/mp4", "Content-Range": "bytes 0-1/5", "Content-Length": "2"})
+        return FakeResponse(b"video" if name == "clip.mp4" else b"live-jpg",
+                            headers={"Content-Type": "video/mp4" if name == "clip.mp4" else "image/jpeg"})
+
+
+class MediaRouteTests(unittest.TestCase):
+    def setUp(self):
+        from app.media import MediaStore
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.media = MediaStore(Path(self.tmp.name) / "media")
+        self.ha = MediaHA()
+        self.app = App(Store(Path(self.tmp.name) / "c.json"), self.ha, media=self.media)
+        self.server = serve(self.app, host="127.0.0.1", port=0, allow_any_client=True)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    def get(self, path, headers=None):
+        req = urllib.request.Request(self.base + path, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, resp.read(), resp.headers
+        except urllib.error.HTTPError as err:
+            return err.code, err.read(), err.headers
+
+    def test_snapshot_copy_then_live(self):
+        ev = "1795354401.831865-vqtljq"
+        self.media.save("inc123", ev, b"copy-jpg")
+        self.assertEqual(self.get(f"/api/media/inc123/{ev}.jpg")[1], b"copy-jpg")
+        self.assertEqual(self.ha.opened, [])
+        status, body, headers = self.get(f"/api/media/other/{ev}.jpg")
+        self.assertEqual((status, body, headers["Content-Type"]), (200, b"live-jpg", "image/jpeg"))
+        self.assertEqual(self.get(f"/api/snapshot/{ev}.jpg")[1], b"live-jpg")
+
+    def test_clip_proxy_and_range(self):
+        ev = "1795354401.831865-vqtljq"
+        self.assertEqual(self.get(f"/api/clip/{ev}.mp4")[1], b"video")
+        status, body, headers = self.get(f"/api/clip/{ev}.mp4", {"Range": "bytes=0-1"})
+        self.assertEqual((status, body, headers["Content-Range"]), (206, b"vi", "bytes 0-1/5"))
+        self.assertEqual(self.get("/api/clip/1795354401.8-gone00.mp4")[0], 404)
+
+    def test_bad_ids_rejected(self):
+        self.assertEqual(self.get("/api/clip/..%2F..%2Fetc.mp4")[0], 400)
+        self.assertEqual(self.get("/api/snapshot/hola.jpg")[0], 400)
+        self.assertEqual(self.ha.opened, [])
+
+    def test_state_has_frigate_block(self):
+        status, body, _ = self.get("/api/state")
+        self.assertEqual(json.loads(body)["frigate"], {"cameras": [], "last": None})

@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -147,3 +148,49 @@ class ReaderTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WatchConn(FakeConn):
+    def __init__(self, states):
+        super().__init__(states)
+        self.triggers = []
+        self.unsubscribed = []
+
+    async def subscribe(self, payload, handler):
+        await super().subscribe(payload, handler)
+        self.triggers.append((payload, handler))
+        return len(self.triggers)
+
+    async def unsubscribe(self, mid):
+        self.unsubscribed.append(mid)
+
+
+class WatcherTests(unittest.IsolatedAsyncioTestCase):
+    async def test_helpers_detected_followed_and_refreshed(self):
+        from app.ha_ws import EntityWatcher
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "c.json")
+            store.save_settings({"incident_entities": ["binary_sensor.puerta"]})
+            value = f"{time.time() - 30:.6f}-abcdef,{time.time() - 29:.6f}-det001"
+            conn = WatchConn([
+                {"entity_id": "alarm_control_panel.alarmo", "state": "disarmed", "attributes": {}},
+                {"entity_id": "input_text.persona_huerto", "state": value, "attributes": {"friendly_name": "Persona huerto"}},
+                {"entity_id": "input_text.persona_patio", "state": "", "attributes": {"friendly_name": "Persona patio"}},
+            ])
+            engine = Engine(store, HAPort(conn, store), IncidentLog(Path(tmp) / "i.json"), time_scale=0)
+            watcher = EntityWatcher(conn, engine, store)
+            await wire(conn, engine, store, watcher=watcher)
+            follow = [p for p, _ in conn.triggers if "trigger" in p and p["trigger"].get("entity_id") != "alarm_control_panel.alarmo"]
+            self.assertEqual(follow[0]["trigger"]["entity_id"], ["binary_sensor.puerta", "input_text.persona_huerto"])
+            self.assertEqual(engine.frigate.latest().camera, "Persona huerto")  # caught up from the current value
+
+            store.save_settings({"person_entities": ["input_text.persona_huerto", "input_text.persona_patio"]})
+            await watcher.refresh()
+            self.assertEqual(conn.unsubscribed, [watcher.sub - 1])
+            self.assertEqual(engine.frigate.cameras, {"input_text.persona_huerto": "Huerto", "input_text.persona_patio": "Patio"})
+            _, handler = conn.triggers[-1]
+            new = f"{time.time():.6f}-zzzzzz"
+            await handler({"variables": {"trigger": {"entity_id": "input_text.persona_patio",
+                                                     "to_state": {"state": new}, "from_state": {"state": ""}}}})
+            self.assertEqual(engine.frigate.latest().camera, "Patio")

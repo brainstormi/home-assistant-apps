@@ -38,6 +38,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Protocol
 
+from .frigate import FrigateWatcher, PersonAlert
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ DISARMED_STATES = {"disarmed"}
 TRIGGERED_STATE = "triggered"
 TEST_PREFIX = "Esto es una prueba de Alarm Contact Center. "
 DRILL_PREFIX = "Esto es un simulacro de alarma. "
+SNAPSHOT_WAITS_S = (8, 20, 40)  # when to try copying a snapshot after the alert
 CHAIN_KINDS = ("alarm", "drill")  # incidents that run the full chain
 AFTER_TEXT = {
     "confirmed": "Confirmó el aviso", "answered": "Contestó sin confirmar", "resolved": "Se le informó y colgó",
@@ -97,6 +99,23 @@ def join_names(names: list[str]) -> str:
     if len(names) == 1:
         return names[0]
     return ", ".join(names[:-1]) + " y " + names[-1]
+
+
+OPENING_CLASSES = {"door", "window", "garage_door", "opening"}
+MOTION_CLASSES = {"motion", "occupancy", "presence"}
+
+
+def describe_change(entity_id: str, state: str, device_class: str) -> str:
+    """Short Spanish text for a sensor change worth putting in the timeline ('' = skip)."""
+    if state in ("unavailable", "unknown", ""):
+        return "no disponible" if state == "unavailable" else ""
+    if entity_id.startswith("binary_sensor."):
+        if device_class in OPENING_CLASSES:
+            return "se abre" if state == "on" else "se cierra"
+        if device_class in MOTION_CLASSES:
+            return "detecta movimiento" if state == "on" else ""
+        return "activo" if state == "on" else ""
+    return state
 
 
 class IncidentLog:
@@ -150,11 +169,26 @@ class Incident:
         self.calling_number = ""
         self.not_answered: list[str] = []
         self.task: asyncio.Task | None = None
+        self.persons: list[dict[str, Any]] = []  # Frigate person alerts in this incident
+        self.media_jobs: set[str] = set()
+        self.final: dict[str, Any] | None = None  # set once the chain has ended
+        self.on_change: Any = None  # set by the engine: called after every change
 
-    def add(self, kind: str, text: str, detail: str = "") -> None:
-        entry = {"t": now_iso(), "kind": kind, "text": text, "detail": detail}
+    def add(self, kind: str, text: str, detail: str = "", t: str | None = None, media: dict[str, Any] | None = None) -> dict[str, Any]:
+        entry: dict[str, Any] = {"t": t or now_iso(), "kind": kind, "text": text, "detail": detail}
+        if media:
+            entry["media"] = media
         self.events.append(entry)
         log.info("[%s] %s%s", self.id, text, f" ({detail})" if detail else "")
+        self.changed()
+        return entry
+
+    def changed(self) -> None:
+        if self.on_change:
+            self.on_change(self)
+
+    def last_person(self) -> dict[str, Any] | None:
+        return max(self.persons, key=lambda p: p["start"]) if self.persons else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -168,17 +202,110 @@ class Incident:
             "acknowledged_by": self.acknowledged_by,
             "ack_via": self.ack_via,
             "events": copy.deepcopy(self.events),
+            "persons": copy.deepcopy(self.persons),
+            "last_person": copy.deepcopy(self.last_person()),
         }
 
 
 class Engine:
-    def __init__(self, store: Store, port: Port, incidents: IncidentLog, time_scale: float = 1.0) -> None:
+    def __init__(self, store: Store, port: Port, incidents: IncidentLog, time_scale: float = 1.0,
+                 media: Any = None) -> None:
         self.store = store
         self.port = port
         self.incidents = incidents
         self.time_scale = time_scale  # tests use 0 to skip real waiting
         self.current: Incident | None = None
         self.alarm_state = ""
+        self.frigate = FrigateWatcher()
+        self.media = media  # MediaStore for snapshot copies (None: no copies)
+        self.listeners: list[Any] = []  # called with the Incident after every change
+
+    # ----------------------------------------------------------- frigate
+    async def on_person_helper(self, entity_id: str, value: str) -> None:
+        """A Frigate person helper changed: the alert goes into the running incident."""
+        alert, _ = self.frigate.on_value(entity_id, value)
+        inc = self.current
+        if alert and inc and self._active(inc) and inc.kind in CHAIN_KINDS:
+            self._add_person(inc, alert)
+
+    def _add_person(self, inc: Incident, alert: PersonAlert, before: bool = False) -> None:
+        existing = next((p for p in inc.persons if p["review_id"] == alert.review_id), None)
+        data = alert.to_dict()
+        if existing:
+            existing.update(data)
+            for e in inc.events:
+                if (e.get("media") or {}).get("review_id") == alert.review_id:
+                    e["detail"] = self._person_detail(alert, before)
+                    e["media"]["event_id"] = alert.event_id
+            inc.changed()
+        else:
+            inc.persons.append(data)
+            when = dt.datetime.fromtimestamp(alert.start).astimezone().isoformat(timespec="seconds")
+            inc.add("person", f"Persona en {alert.camera}", self._person_detail(alert, before), t=when,
+                    media={"review_id": alert.review_id, "event_id": alert.event_id, "camera": alert.camera, "snapshot": False})
+        if alert.event_id:
+            asyncio.get_running_loop().create_task(self._keep_media(inc, alert))
+
+    @staticmethod
+    def _person_detail(alert: PersonAlert, before: bool) -> str:
+        parts = ["Alerta de Frigate"]
+        if before:
+            parts.append("antes del disparo")
+        return " · ".join(parts)
+
+    async def _keep_media(self, inc: Incident, alert: PersonAlert) -> None:
+        """Copy the snapshot into the incident and ask Frigate to keep the event.
+
+        Frigate keeps improving an event's snapshot for a few seconds, so the copy is
+        taken after a short wait, and retried if Frigate has none yet.
+        """
+        event_id = alert.event_id
+        key = f"{alert.review_id}:{event_id}"
+        if key in inc.media_jobs:
+            return
+        inc.media_jobs.add(key)
+        entry = next((e for e in inc.events if (e.get("media") or {}).get("review_id") == alert.review_id), None)
+        if entry is None:
+            return
+        retain = getattr(self.port, "frigate_retain", None)
+        if retain:
+            try:
+                await retain(event_id)
+            except Exception as err:  # noqa: BLE001 - older Frigate integrations lack the command
+                log.info("[%s] Frigate could not retain %s: %s", inc.id, event_id, err)
+        fetch = getattr(self.port, "frigate_snapshot", None)
+        if fetch is None or self.media is None:
+            return
+        for wait in SNAPSHOT_WAITS_S:
+            await asyncio.sleep(wait * self.time_scale)
+            try:
+                data = await fetch(event_id)
+            except Exception as err:  # noqa: BLE001
+                log.info("[%s] snapshot %s not ready: %s", inc.id, event_id, err)
+                continue
+            if data and self.media.save(inc.id, event_id, data):
+                entry["media"]["snapshot"] = event_id
+                inc.changed()
+                self.incidents.save(inc.to_dict())
+                return
+        log.warning("[%s] no snapshot for %s", inc.id, event_id)
+
+    # ------------------------------------------------- incident sensors
+    async def on_watched_entity(self, entity_id: str, new: dict[str, Any], old: dict[str, Any] | None = None) -> None:
+        """Sensors listed in the settings: their changes go into the running incident."""
+        inc = self.current
+        if not (inc and self._active(inc) and inc.kind in CHAIN_KINDS):
+            return
+        if entity_id not in self.store.settings()["incident_entities"]:
+            return
+        state = str(new.get("state") or "")
+        if old is not None and str(old.get("state") or "") == state:
+            return
+        attrs = new.get("attributes") or {}
+        name = attrs.get("friendly_name") or entity_id
+        text = describe_change(entity_id, state, str(attrs.get("device_class") or ""))
+        if text:
+            inc.add("sensor", f"{name}: {text}", entity_id)
 
     # ------------------------------------------------------------- inputs
     async def on_alarm_state(self, state: str, attributes: dict[str, Any] | None = None, restarted: bool = False) -> None:
@@ -292,8 +419,28 @@ class Engine:
 
     def _launch(self, inc: Incident) -> None:
         self.current = inc
+        inc.on_change = self._changed
+        if inc.kind in CHAIN_KINDS:
+            # What the cameras saw just before the trigger, ahead of it in the timeline.
+            minutes = self.store.settings()["frigate_pre_minutes"]
+            before = self.frigate.window(inc.started - minutes * 60, inc.started)
+            later = self.frigate.window(inc.started, time.time() + 1)
+            trigger_events, inc.events = inc.events, []
+            for alert in before:
+                self._add_person(inc, alert, before=True)
+            inc.events.extend(trigger_events)
+            for alert in later:
+                self._add_person(inc, alert)
         inc.task = asyncio.get_running_loop().create_task(self._run(inc))
         self.incidents.save(inc.to_dict())
+        self._changed(inc)
+
+    def _changed(self, inc: Incident) -> None:
+        for listener in list(self.listeners):
+            try:
+                listener(inc)
+            except Exception:  # noqa: BLE001
+                log.exception("Incident listener failed")
 
     async def _start_alarm(self, attributes: dict[str, Any], restarted: bool) -> None:
         # A test or a drill in progress gives way to the real alarm.
@@ -350,6 +497,8 @@ class Engine:
             final = inc.to_dict()
             final["active"] = False  # the task is still running at this point
             self.incidents.save(final)
+            inc.final = final
+            self._changed(inc)
 
     # ------------------------------------------------------------ alarm
     async def _run_alarm(self, inc: Incident) -> None:

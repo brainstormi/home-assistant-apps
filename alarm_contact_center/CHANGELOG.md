@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+Phase 3: the incident with cameras and sensors.
+
+- Frigate person alerts in the incident timeline, including the minutes before the trigger. The App follows the `input_text` helpers an automation already fills on every person alert (`<review id>,<detection ids>`), set in Ajustes or detected by their value; it does not listen to MQTT itself.
+- A copy of each snapshot is kept with the incident (`/data/media`, cleaned after the retention days) and Frigate is asked to retain the event. Photos and clips open from the timeline and from a gallery; clips are streamed through the Frigate integration's notification proxy, with Range support for iOS.
+- Incident sensors (doors, windows, motion) added to the timeline when they change.
+- Home page: last person seen and the cameras followed.
+- `sensor.alarm_contact_center_incident` through MQTT discovery, with a one-sentence summary of the last real alarm for Assist.
+- Followed entities are re-subscribed as soon as the settings are saved.
+
 ## 0.4.2
 
 - A trunk test that goes out but does not come back (`out_only`, typically `BUSY` because the operator refuses calls to the line's own number) is shown as a working line ("Funciona", green). It never alerted; only `failed` or no answer from the Bridge do.

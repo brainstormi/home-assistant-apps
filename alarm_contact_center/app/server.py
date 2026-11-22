@@ -11,7 +11,9 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import threading
+import urllib.error
 from concurrent.futures import Future
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,14 +29,17 @@ log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 INGRESS_PROXY = "172.30.32.2"
 MAX_BODY = 256 * 1024
+EVENT_RE = re.compile(r"^[0-9]{9,11}(\.[0-9]+)?-[a-z0-9]{4,10}$")  # Frigate event id
 
 
 class App:
     """API logic, kept apart from the HTTP server so it can be tested."""
 
     def __init__(self, store: Store, ha: HomeAssistant, engine: Any = None, loop: asyncio.AbstractEventLoop | None = None,
-                 incidents: Any = None, trunk: Any = None) -> None:
+                 incidents: Any = None, trunk: Any = None, media: Any = None, watcher: Any = None) -> None:
         self.store = store
+        self.media = media  # MediaStore with the incidents' snapshot copies
+        self.watcher = watcher  # EntityWatcher: re-subscribed when the settings change
         self.trunk = trunk
         self.ha = ha
         self.engine = engine  # None in phase-1 style tests: chain features answer 503
@@ -128,6 +133,7 @@ class App:
             "status": self.ha.status(states, {"trunk": self.store.settings()["trunk_entity"],
                                               "ami": self.store.settings()["ami_entity"]}),
             "trunk": self.trunk.status() if self.trunk is not None else None,
+            "frigate": self.frigate_status(),
             "defaults": {"bridge_addon": default_bridge_addon()},
             "pins": {
                 "mode": pins.mode,
@@ -137,6 +143,25 @@ class App:
                 "issues": pins.issues,
             },
         }
+
+    def save_settings(self, data: dict[str, Any]) -> dict[str, Any]:
+        saved = self.store.save_settings(data)
+        if self.watcher is not None and self.loop is not None:
+            try:
+                self._on_loop("refresh", target=self.watcher, timeout=15)
+            except Exception as err:  # noqa: BLE001 - saving worked; following the new entities can wait for a reconnect
+                log.warning("Could not follow the new entities yet: %s", err)
+        return saved
+
+    def frigate_status(self) -> dict[str, Any]:
+        """Followed person helpers and the last person seen, for the panel."""
+        if self.engine is None:
+            return {"cameras": [], "last": None}
+        fw = self.engine.frigate
+        last = fw.latest()
+        return {"cameras": [{"entity_id": e, "name": n} for e, n in fw.cameras.items()],
+                "configured": bool(self.store.settings()["person_entities"]),
+                "last": last.to_dict() if last else None}
 
     def save_contact(self, data: dict[str, Any], cid: str | None = None) -> dict[str, Any]:
         _, pins = self._context()
@@ -200,6 +225,47 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
             self.end_headers()
             self.wfile.write(body)
 
+        def _snapshot(self, incident_id: str, event_id: str) -> None:
+            """The incident's own copy when there is one, otherwise Frigate's."""
+            if not EVENT_RE.match(event_id):
+                raise ValueError("Evento no válido.")
+            data = app.media.read(incident_id, event_id) if (incident_id and app.media is not None) else None
+            if data is None:
+                self._proxy_frigate(event_id, "snapshot.jpg")
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "private, max-age=86400")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _proxy_frigate(self, event_id: str, name: str) -> None:
+            """Stream a snapshot or clip from Home Assistant (Range kept for video on iOS)."""
+            if not EVENT_RE.match(event_id):
+                raise ValueError("Evento no válido.")
+            try:
+                resp = app.ha.open_frigate(event_id, name, self.headers.get("Range") or "")
+            except urllib.error.HTTPError as err:
+                status = HTTPStatus.NOT_FOUND if err.code == 404 else HTTPStatus.BAD_GATEWAY
+                self._send_json({"error": "Frigate ya no tiene este vídeo." if err.code == 404 else "Frigate no responde."}, status)
+                return
+            except (urllib.error.URLError, OSError):
+                self._send_json({"error": "Frigate no responde."}, HTTPStatus.BAD_GATEWAY)
+                return
+            with resp:
+                self.send_response(resp.status)
+                for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                    if resp.headers.get(header):
+                        self.send_header(header, resp.headers[header])
+                self.send_header("Cache-Control", "private, max-age=3600")
+                self.end_headers()
+                try:
+                    while chunk := resp.read(64 * 1024):
+                        self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # the viewer closed the video
+
         def _route(self) -> list[str]:
             path = self.path.split("?", 1)[0]
             return [p for p in path.split("/") if p]
@@ -246,7 +312,7 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
                 app.store.reorder([str(i) for i in ids])
                 self._send_json({"ok": True})
             elif method == "PUT" and parts == ["settings"]:
-                self._send_json(app.store.save_settings(self._read_json()))
+                self._send_json(app.save_settings(self._read_json()))
             elif method == "GET" and parts == ["incidents"]:
                 self._send_json(app.incident_list())
             elif method == "POST" and parts == ["test"]:
@@ -266,6 +332,12 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
             elif method == "POST" and parts == ["cancel"]:
                 app.cancel()
                 self._send_json({"ok": True})
+            elif method == "GET" and len(parts) == 3 and parts[0] == "media" and parts[2].endswith(".jpg"):
+                self._snapshot(parts[1], parts[2][:-4])
+            elif method == "GET" and len(parts) == 2 and parts[0] == "snapshot" and parts[1].endswith(".jpg"):
+                self._snapshot("", parts[1][:-4])
+            elif method == "GET" and len(parts) == 2 and parts[0] == "clip" and parts[1].endswith(".mp4"):
+                self._proxy_frigate(parts[1][:-4], "clip.mp4")
             elif method == "GET" and parts == ["export"]:
                 self._send_json(app.export_config())
             elif method == "POST" and parts == ["import"]:
@@ -312,7 +384,9 @@ def main() -> None:
 async def _run() -> None:
     # Imported here so the panel and its tests work without aiohttp installed.
     from .engine import Engine, IncidentLog
-    from .ha_ws import HAConnection, HAPort, wire
+    from .ha_ws import EntityWatcher, HAConnection, HAPort, wire
+    from .media import MediaStore
+    from .report import Reporter
     from .trunk import TrunkMonitor
 
     data_dir = Path(os.environ.get("ACC_DATA_DIR", "/data"))
@@ -320,10 +394,15 @@ async def _run() -> None:
     incidents = IncidentLog(data_dir / "incidents.json")
     conn = HAConnection()
     port_ = HAPort(conn, store)
-    engine = Engine(store, port_, incidents)
+    media = MediaStore(data_dir / "media")
+    engine = Engine(store, port_, incidents, media=media)
     trunk = TrunkMonitor(store, port_, incidents, engine, data_dir / "trunk.json")
+    watcher = EntityWatcher(conn, engine, store)
+    reporter = Reporter(port_.mqtt_publish, incidents)
+    reporter.load()
+    engine.listeners.append(reporter.on_change)
     loop = asyncio.get_running_loop()
-    app = App(store, HomeAssistant(), engine, loop, incidents, trunk)
+    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher)
 
     allow_any = os.environ.get("ACC_ALLOW_ANY_CLIENT") == "1"
     port = int(os.environ.get("ACC_PORT", "8099"))
@@ -331,12 +410,26 @@ async def _run() -> None:
     threading.Thread(target=server.serve_forever, name="panel", daemon=True).start()
     log.info("Alarm Contact Center %s: panel listening on port %d", __version__, port)
     scheduler = asyncio.create_task(trunk.scheduler())
+    cleaner = asyncio.create_task(_clean_media(media, store))
     try:
-        await conn.run(lambda: wire(conn, engine, store, trunk))
+        await conn.run(lambda: wire(conn, engine, store, trunk, watcher, reporter))
     finally:
         scheduler.cancel()
+        cleaner.cancel()
         server.shutdown()
         server.server_close()
+
+
+async def _clean_media(media: Any, store: Store) -> None:
+    """Once a day, delete snapshot copies older than the retention setting."""
+    while True:
+        try:
+            removed = await asyncio.to_thread(media.cleanup, store.settings()["media_retention_days"])
+            if removed:
+                log.info("Deleted the photos of %d old incident(s)", removed)
+        except Exception:  # noqa: BLE001
+            log.exception("Media cleanup failed")
+        await asyncio.sleep(86400)
 
 
 if __name__ == "__main__":
