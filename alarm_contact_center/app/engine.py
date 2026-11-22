@@ -106,6 +106,25 @@ LOCK_TEXT = {"locked": "se cierra con llave", "unlocked": "se abre la cerradura"
              "jammed": "atascada", "unlocking": "", "locking": "", "opening": ""}
 
 
+# Doors with one sensor per end position ("Garage door closed", "Garage door open"):
+# the name says which position the sensor detects.
+POSITION_WORDS = {"cerrada": "closed", "cerrado": "closed", "closed": "closed",
+                  "abierta": "open", "abierto": "open", "open": "open"}
+POSITION_TEXT = {("closed", "on"): "abierta", ("closed", "off"): "cerrada",
+                 ("open", "on"): "abierta del todo", ("open", "off"): "se está cerrando"}
+
+
+def describe_position(name: str, state: str, device_class: str) -> tuple[str, str]:
+    """(name without the position word, text) for an end-position sensor; (name, '') otherwise."""
+    words = name.split()
+    if device_class not in OPENING_CLASSES or len(words) < 2 or state not in ("on", "off"):
+        return name, ""
+    position = POSITION_WORDS.get(words[-1].lower())
+    if not position:
+        return name, ""
+    return " ".join(words[:-1]), POSITION_TEXT[(position, state)]
+
+
 def describe_change(entity_id: str, state: str, device_class: str) -> str:
     """Short Spanish text for a sensor change worth putting in the timeline ('' = skip)."""
     if state in ("unavailable", "unknown", ""):
@@ -312,7 +331,9 @@ class Engine:
             return
         attrs = new.get("attributes") or {}
         name = attrs.get("friendly_name") or entity_id
-        text = describe_change(entity_id, state, str(attrs.get("device_class") or ""))
+        name, text = describe_position(name, state, str(attrs.get("device_class") or ""))
+        if not text:
+            text = describe_change(entity_id, state, str(attrs.get("device_class") or ""))
         if text:
             inc.add("sensor", f"{name}: {text}", entity_id)
 
