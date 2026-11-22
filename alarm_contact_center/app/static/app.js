@@ -354,20 +354,25 @@ async function refreshCurrent() {
     if (!cur) { slot.replaceChildren(); }
     else {
       const last = cur.events[cur.events.length - 1] || {};
-      slot.replaceChildren(el("div", { class: "banner " + (cur.kind === "alarm" ? "alarm" : "info") },
+      const calling = cur.phase === "calling";
+      const what = cur.kind === "alarm" ? `Alarma · ${cur.sensor}` : cur.kind === "drill" ? `Simulacro · ${cur.sensor}` : "Prueba en curso";
+      let line = `${STATUS_TEXT[cur.status] || cur.status} · ${last.text || ""}`;
+      if (calling && !["calling", "waiting"].includes(cur.status)) line += " · terminando la llamada en curso";
+      if (cur.phase === "open") line = `${STATUS_TEXT[cur.status] || cur.status}${cur.acknowledged_by ? " por " + cur.acknowledged_by : ""} · sigue abierta hasta que se desarme`;
+      if (cur.phase === "closing") line = `Desarmada · se sigue registrando hasta las ${fmtTime(cur.recording_until).split(", ").pop()}`;
+      slot.replaceChildren(el("div", { class: "banner " + (cur.kind === "alarm" && cur.phase !== "closing" ? "alarm" : "info") },
         icon(ICON.warn, 20),
         el("div", { style: "flex:1 1 320px;display:flex;flex-direction:column;gap:2px" },
-          el("strong", {}, cur.kind === "alarm" ? `Alarma en curso · ${cur.sensor}` : cur.kind === "drill" ? `Simulacro en curso · ${cur.sensor}` : "Prueba en curso"),
-          el("span", {}, `${STATUS_TEXT[cur.status] || cur.status} · ${last.text || ""}` +
-            (["calling", "waiting"].includes(cur.status) ? "" : " · terminando la llamada en curso"))),
+          el("strong", {}, what), el("span", {}, line)),
         el("a", { href: "#/incidentes" }, "Ver detalle"),
-        cur.kind === "drill" && ["calling", "waiting"].includes(cur.status) ? el("button", { class: "btn", type: "button", onclick: async () => {
-          try { await api("POST", "api/drill/disarm"); toast("Desarme simulado."); refreshCurrent(); } catch (e) { toast(e.message, true); }
-        } }, "Simular desarme") : null,
-        el("button", { class: "btn danger", type: "button", onclick: async () => {
+        cur.kind === "drill" && !cur.disarmed && (cur.phase !== "calling" || ["calling", "waiting"].includes(cur.status))
+          ? el("button", { class: "btn", type: "button", onclick: async () => {
+            try { await api("POST", "api/drill/disarm"); toast("Desarme simulado."); refreshCurrent(); } catch (e) { toast(e.message, true); }
+          } }, "Simular desarme") : null,
+        calling ? el("button", { class: "btn danger", type: "button", onclick: async () => {
           if (!window.confirm("¿Parar las llamadas y avisos? La alarma NO se desarma.")) return;
           try { await api("POST", "api/cancel"); toast("Avisos parados."); refreshCurrent(); } catch (e) { toast(e.message, true); }
-        } }, "Parar avisos")));
+        } }, "Parar avisos") : null));
     }
   } catch (_) { /* keep the last view */ }
   currentTimer = setTimeout(refreshCurrent, 3000);
@@ -575,6 +580,7 @@ function showSettings(draft = null, errors = {}) {
   } }, "Probar la troncal ahora");
   const pre = num("frigate_pre_minutes", st.frigate_pre_minutes, 0, 30);
   const post = num("post_minutes", st.post_minutes, 0, 60);
+  const maxOpen = num("max_open_minutes", st.max_open_minutes, 15, 720);
   const retention = num("media_retention_days", st.media_retention_days, 7, 365);
   const photos = el("input", { id: "send_photos_external", type: "checkbox", checked: st.send_photos_external });
   const helpers = el("textarea", { id: "person_entities", rows: "3", placeholder: "input_text.persona_huerto" }, (st.person_entities || []).join("\n"));
@@ -604,7 +610,7 @@ function showSettings(draft = null, errors = {}) {
       trunk_test_hour: Number(trunkHour.value), trunk_test_number: trunkNumber.value,
       trunk_entity: trunkEntity.value, ami_entity: amiEntity.value,
       flap_alert_count: Number(flapCount.value), flap_window_min: Number(flapWindow.value),
-      frigate_pre_minutes: Number(pre.value), post_minutes: Number(post.value), media_retention_days: Number(retention.value),
+      frigate_pre_minutes: Number(pre.value), post_minutes: Number(post.value), max_open_minutes: Number(maxOpen.value), media_retention_days: Number(retention.value),
       send_photos_external: photos.checked,
       incident_entities: entities.value.split(/[\s,]+/).filter(Boolean),
       person_entities: helpers.value.split(/[\s,]+/).filter(Boolean),
@@ -684,8 +690,10 @@ function showSettings(draft = null, errors = {}) {
 
     el("section", { class: "card", "aria-labelledby": "inc-h" },
       el("h2", { id: "inc-h", style: "font-size:17px" }, "Registro del incidente"),
-      field("post_minutes", "Seguir registrando después del cierre (min)", post,
-        "Cámaras y sensores siguen entrando en la cronología estos minutos después de que alguien atienda, se desarme o terminen los avisos. 0: no.", errors.post_minutes),
+      el("p", { class: "small muted", style: "margin:0" }, "Atender la alarma para las llamadas, pero el incidente sigue abierto: cámaras y sensores siguen entrando en la cronología hasta que se desarma."),
+      el("div", { class: "grid" },
+        field("post_minutes", "Seguir registrando después del desarme (min)", post, "0: se cierra al desarmar.", errors.post_minutes),
+        field("max_open_minutes", "Cerrar si nadie desarma tras (min)", maxOpen, null, errors.max_open_minutes)),
       field("incident_entities", "Sensores que se añaden a la cronología", entities, "Un entity_id por línea: puertas, ventanas, movimiento, cerraduras, personas…", errors.incident_entities)),
 
     el("section", { class: "card", "aria-labelledby": "bridge-h" },
@@ -741,7 +749,7 @@ async function importConfig(ev) {
 const KIND_LABEL = { alarm: "Alarma", drill: "Simulacro", test: "Prueba", trunk: "Línea" };
 const KIND_COLOR = {
   triggered: "bad", trunk_down: "bad", error: "bad", confirmed: "ok", acknowledged: "ok", disarmed: "ok",
-  trunk_ok: "ok", person: "bad", sensor: "warn", call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
+  trunk_ok: "ok", person: "bad", sensor: "warn", closed: "", call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
 };
 
 function fmtTime(iso) {
@@ -771,7 +779,8 @@ async function showIncidents(selectedId = null) {
     el("h2", { id: "inc-det-h" }, `${fmtTime(selected.started)} · ${selected.sensor}`),
     el("span", { class: "muted" }, `${KIND_LABEL[selected.kind] || selected.kind} · ${STATUS_TEXT[selected.status] || selected.status}` +
       (selected.acknowledged_by ? ` · atendida por ${selected.acknowledged_by} (${selected.ack_via})` : "") + (selected.active ? " · en curso" : "") +
-      (!selected.active && selected.recording_until ? ` · sigue registrando cámaras y sensores hasta las ${fmtTime(selected.recording_until).split(", ").pop()}` : "")),
+      (selected.phase === "open" ? " · abierta hasta que se desarme" : "") +
+      (selected.phase === "closing" ? ` · desarmada, se sigue registrando hasta las ${fmtTime(selected.recording_until).split(", ").pop()}` : "")),
     personGallery(selected),
     el("ol", { class: "timeline" }, selected.events.map((e) => el("li", {},
       el("span", { class: "dot " + (KIND_COLOR[e.kind] || ""), "aria-hidden": "true" }),
@@ -779,7 +788,7 @@ async function showIncidents(selectedId = null) {
         e.detail ? el("div", { class: "small muted" }, e.detail) : null,
         e.media && e.media.event_id ? thumb(selected.id, e.media, e.text, fmtTime(e.t)) : null))))) : null;
   render(el("div", { style: "display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start" }, list, detail));
-  if (selected && (selected.active || selected.recording_until)) incidentTimer = setTimeout(() => showIncidents(selected.id), 3000);
+  if (selected && selected.phase && selected.phase !== "closed") incidentTimer = setTimeout(() => showIncidents(selected.id), 3000);
 }
 
 // ------------------------------------------------------------ frigate media

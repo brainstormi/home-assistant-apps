@@ -62,7 +62,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "trunk_entity": "binary_sensor.siptrunk_registered",
     "ami_entity": "binary_sensor.ami_connected",
     "frigate_pre_minutes": 5,
-    "post_minutes": 10,  # keep recording cameras and sensors this long after the end (0 = no)
+    "post_minutes": 10,  # the incident closes this long after the disarm (0 = at once)
+    "max_open_minutes": 120,  # ...or this long after the trigger if nobody disarms
     "media_retention_days": 90,
     "send_photos_external": True,
     "incident_entities": [],
@@ -280,6 +281,7 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
             errors[key] = "Tiene que ser una entidad binary_sensor.xxx."
     s["frigate_pre_minutes"] = _int_in(s["frigate_pre_minutes"], 0, 30, "frigate_pre_minutes", errors)
     s["post_minutes"] = _int_in(s["post_minutes"], 0, 60, "post_minutes", errors)
+    s["max_open_minutes"] = _int_in(s["max_open_minutes"], 15, 720, "max_open_minutes", errors)
     s["media_retention_days"] = _int_in(s["media_retention_days"], 7, 365, "media_retention_days", errors)
     s["send_photos_external"] = bool(s["send_photos_external"])
 

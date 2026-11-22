@@ -219,46 +219,122 @@ class PositionTests(unittest.TestCase):
         self.assertEqual(describe_position("Cerrada", "on", "door"), ("Cerrada", ""))
 
 
-class AfterCloseTests(unittest.IsolatedAsyncioTestCase):
+class LifecycleTests(unittest.IsolatedAsyncioTestCase):
+    """Taking charge stops the calls; the incident stays open until the disarm plus
+    the minutes after it, or until the maximum time open."""
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.tmp.name) / "c.json")
-        self.store.save_settings({"call_delay": 0, "rounds": 1, "post_minutes": 10,
+        self.store.save_settings({"call_delay": 0, "rounds": 1, "post_minutes": 10, "max_open_minutes": 120,
                                   "incident_entities": ["binary_sensor.ventana"]})
-        self.store.save_contact({"kind": "external", "name": "Pablo", "phone": "600000003"}, PinStatus("none", []))
+        self.pablo = self.store.save_contact({"kind": "external", "name": "Pablo", "phone": "600000003"}, PinStatus("none", []))
+        self.store.save_contact({"kind": "person", "person": "person.luis", "name": "Luis", "notify_service": "mobile_app_l"},
+                                PinStatus("none", []))
         self.log = IncidentLog(Path(self.tmp.name) / "i.json")
 
     async def asyncTearDown(self):
         self.tmp.cleanup()
 
-    async def run_alarm(self):
-        engine = Engine(self.store, MediaPort({"600000003": [{"resultado": "confirmed"}]}), self.log, time_scale=0,
-                        media=MediaStore(Path(self.tmp.name) / "m"))
+    def engine(self):
+        self.port = MediaPort({"600000003": [{"resultado": "confirmed"}]})
+        engine = Engine(self.store, self.port, self.log, time_scale=0, media=MediaStore(Path(self.tmp.name) / "m"))
         engine.frigate.set_helpers({"input_text.a": "Portal"})
+        return engine
+
+    async def run_alarm(self, engine):
         await engine.on_alarm_state("armed_away")
         await engine.on_alarm_state("triggered", TRIGGER)
         await engine.current.task
-        return engine
+        return engine.current
 
-    async def test_events_after_the_end_are_kept_and_saved(self):
-        engine = await self.run_alarm()
-        inc = engine.current
-        self.assertEqual(inc.status, "acknowledged")
+    async def window(self, engine, state="on"):
+        await engine.on_watched_entity("binary_sensor.ventana", {"state": state, "attributes": {"friendly_name": "Ventana", "device_class": "window"}},
+                                       {"state": "off" if state == "on" else "on"})
+
+    async def test_open_until_disarmed_then_closing_then_closed(self):
+        engine = self.engine()
+        inc = await self.run_alarm(engine)
+        self.assertEqual((inc.status, inc.phase()), ("acknowledged", "open"))
         self.assertIsNotNone(inc.to_dict()["recording_until"])
-        await engine.on_watched_entity("binary_sensor.ventana", {"state": "on", "attributes": {"friendly_name": "Ventana", "device_class": "window"}}, {"state": "off"})
+        await self.window(engine)
         await engine.on_person_helper("input_text.a", f"{time.time():.6f}-later1,{time.time():.6f}-det009")
-        last_two = inc.events[-2:]
-        self.assertEqual([e["text"] for e in last_two], ["Ventana: se abre", "Persona en Portal"])
-        self.assertTrue(all("después del cierre" in e["detail"] for e in last_two))
-        saved = self.log.items()[0]
-        self.assertEqual(saved["events"][-1]["text"], "Persona en Portal")
-        self.assertFalse(saved["active"])
+        self.assertEqual([e["text"] for e in inc.events[-2:]], ["Ventana: se abre", "Persona en Portal"])
+        self.assertFalse(any("después del desarme" in e["detail"] for e in inc.events[-2:]))
 
-    async def test_window_over_or_disabled(self):
-        self.store.save_settings({"post_minutes": 0})
-        engine = await self.run_alarm()
-        inc = engine.current
-        self.assertIsNone(inc.to_dict()["recording_until"])
+        await engine.on_alarm_state("disarmed")
+        self.assertEqual(inc.phase(), "closing")
+        self.assertEqual(inc.events[-1]["text"], "Alarma desarmada")
+        self.assertEqual(inc.status, "acknowledged")  # who handled it is kept
+        self.assertTrue(any(n[1] == "Alarma desarmada" for n in self.port.notifications))
+        self.assertAlmostEqual(inc.record_until, inc.disarmed_at + 600, delta=1)
+        await self.window(engine, "off")
+        self.assertEqual(inc.events[-1]["detail"], "después del desarme")
+        self.assertEqual(self.log.items()[0]["events"][-1]["text"], "Ventana: se cierra")
+
+        inc.record_until = time.time() - 1
+        await engine._closer(inc)
+        self.assertEqual(inc.phase(), "closed")
+        self.assertEqual(inc.events[-1]["text"], "Incidente cerrado")
         n = len(inc.events)
-        await engine.on_watched_entity("binary_sensor.ventana", {"state": "on", "attributes": {"device_class": "window"}}, {"state": "off"})
+        await self.window(engine)
         self.assertEqual(len(inc.events), n)
+        saved = self.log.items()[0]
+        self.assertEqual((saved["phase"], saved["recording_until"]), ("closed", None))
+
+    async def test_disarm_with_no_minutes_closes_at_once(self):
+        self.store.save_settings({"post_minutes": 0})
+        engine = self.engine()
+        inc = await self.run_alarm(engine)
+        await engine.on_alarm_state("disarmed")
+        self.assertEqual(inc.phase(), "closed")
+
+    async def test_disarm_during_the_chain(self):
+        engine = self.engine()
+        self.port.gate = asyncio.Event()
+        await engine.on_alarm_state("armed_away")
+        await engine.on_alarm_state("triggered", TRIGGER)
+        await asyncio.wait_for(self.port.in_call.wait(), 2)
+        await engine.on_alarm_state("disarmed")
+        self.port.gate.set()
+        inc = engine.current
+        await inc.task
+        self.assertEqual((inc.status, inc.phase()), ("disarmed", "closing"))
+        self.assertEqual(sum(e["kind"] == "disarmed" for e in inc.events), 1)
+
+    async def test_nobody_disarms_closes_after_the_maximum(self):
+        engine = self.engine()
+        inc = await self.run_alarm(engine)
+        self.assertAlmostEqual(inc.record_until, inc.started + 120 * 60, delta=1)
+        inc.record_until = time.time() - 1
+        await engine._closer(inc)
+        self.assertEqual(inc.events[-1]["text"], "Incidente cerrado sin desarmar (tiempo máximo abierto)")
+
+    async def test_drill_disarm_after_taking_charge(self):
+        engine = self.engine()
+        await engine.start_drill([self.pablo["id"]], "")
+        inc = engine.current
+        await inc.task
+        self.assertEqual(inc.phase(), "open")
+        await engine.simulate_disarm()
+        self.assertEqual((inc.phase(), inc.events[-1]["text"]), ("closing", "Simulacro: alarma desarmada"))
+        with self.assertRaises(RuntimeError):
+            await engine.simulate_disarm()
+
+    async def test_new_alarm_closes_the_open_one(self):
+        engine = self.engine()
+        first = await self.run_alarm(engine)
+        self.port.answers["600000003"] = [{"resultado": "confirmed"}]
+        await engine.on_alarm_state("armed_away")
+        await engine.on_alarm_state("triggered", TRIGGER)
+        await engine.current.task
+        self.assertIsNot(engine.current, first)
+        self.assertEqual((first.phase(), first.events[-1]["text"]), ("closed", "Cerrado: ha empezado otro incidente"))
+
+    async def test_no_test_or_drill_while_an_alarm_is_open(self):
+        engine = self.engine()
+        await self.run_alarm(engine)
+        with self.assertRaises(RuntimeError):
+            await engine.start_test(self.pablo["id"])
+        with self.assertRaises(RuntimeError):
+            await engine.start_drill([self.pablo["id"]], "")

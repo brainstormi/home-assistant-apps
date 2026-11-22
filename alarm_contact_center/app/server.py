@@ -89,15 +89,17 @@ class App:
     def incident_list(self) -> dict[str, Any]:
         current = self.engine.status() if self.engine is not None else None
         items = self.incidents.items() if self.incidents is not None else []
-        # Only the engine knows what is really running: nothing in the log is active.
+        # Only the engine knows what is really running or open: a logged incident that is
+        # not the engine's current one was left behind (App restart) and counts as closed.
         for item in items:
             item["active"] = False
-            until = item.get("recording_until")
-            if until and until <= dt.datetime.now().astimezone().isoformat(timespec="seconds"):
-                item["recording_until"] = None
+            item["recording_until"] = None
+            if item.get("phase") in ("calling", "open", "closing"):
+                item["phase"] = "closed"
         if current:
             items = [current] + [i for i in items if i.get("id") != current["id"]]
-        return {"current": current if current and current.get("active") else None, "items": items}
+        live = current and current.get("phase", "closed") != "closed"
+        return {"current": current if live else None, "items": items}
 
     def export_config(self) -> dict[str, Any]:
         snap = self.store.snapshot()

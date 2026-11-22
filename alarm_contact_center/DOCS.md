@@ -14,10 +14,11 @@ Alerts a list of contacts when the Alarmo alarm goes off: phone calls through As
 
 A voicemail (recognised by the assistant, see **Ajustes → Buzón de voz**) or a person who never answers the prompts does not count as a confirmation: the chain moves on to the next contact.
 6. If the trunk is down (`CHANUNAVAIL` or `CONGESTION`), the App stops calling and says so in the notifications.
+7. **Taking charge is not the end.** After someone confirms (or the chain ends with nobody answering), the incident stays **open**: cameras and sensors keep going into the timeline, because an intruder may still be around. When the alarm is **disarmed**, it keeps recording for **Seguir registrando después del desarme** (10 minutes by default) and then **closes**. If nobody disarms it, it closes after **Cerrar si nadie desarma tras** (120 minutes by default). Entries after the disarm are marked "después del desarme". While a real alarm is open, test calls and drills cannot start; a new alarm closes the open one.
 
 External contacts always call in query-only mode. Contacts allowed to manage call in Management mode with their Home Assistant person, so the Bridge asks for their PIN.
 
-**Simulacro** on the home page runs the whole chain as if the alarm had triggered, without touching the alarm (no siren): you choose who takes part and which sensor "triggers". Notifications and calls say it is a drill, **Simular desarme** tests the disarm path, it never takes the phone line from other calls, and a real alarm cancels it.
+**Simulacro** on the home page runs the whole chain as if the alarm had triggered, without touching the alarm (no siren): you choose who takes part and which sensor "triggers". Notifications and calls say it is a drill, **Simular desarme** (also after someone has taken charge) tests the disarm and closes the drill like a real disarm, it never takes the phone line from other calls, and a real alarm cancels it.
 
 **Probar una llamada** on the home page calls one contact once, with a message that starts with "Esto es una prueba". It sends no notifications, cannot run during a real alarm, and a real alarm cancels it.
 
@@ -63,7 +64,6 @@ for example `1795354401.831865-vqtljq,1795354411.489668-aradwo`. An automation o
 - **Which helpers:** **Ajustes → Cámaras (Frigate)**, one entity per line. Left empty, every `input_text` whose value looks like the above is used. The camera name comes from the helpers' friendly names, without the words they all share ("Person event garden" and "Person event garage" become "Garden" and "Garage").
 - **In the incident:** alerts from the chosen minutes before the trigger (default 5) and every alert while the chain runs are added to the timeline, with a photo. The App keeps its own copy of the snapshot (in `/data/media`, deleted after the chosen days, default 90) and asks Frigate to retain the event (`frigate/event/retain` through the Frigate integration), so the clip is not deleted by Frigate's retention. Photos and clips come straight from Frigate's API (`/api/events/<id>/snapshot.jpg` and `clip.mp4`): its address is taken from the Frigate integration (the entry's `host:port`), or set in **Dirección de Frigate**. The integration's notification proxy is not used: it fails for requests that come through the Supervisor, the only way an App can reach Home Assistant.
 - **Incident sensors:** entities listed under **Registro del incidente** (doors, windows, motion) are added to the timeline when they change during an incident.
-- **After the end:** cameras and sensors keep going into the incident for the minutes set in **Seguir registrando después del cierre** (default 10, 0 = off) after someone takes charge, the alarm is disarmed or the chain ends, marked "después del cierre". An intruder who leaves after the alarm is handled still shows up in the history.
 - **Home page:** the last person seen and the cameras being followed.
 
 Drills include cameras and sensors too; test calls do not.
