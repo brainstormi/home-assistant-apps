@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Registration stability: every drop of the trunk registration or the Asterisk connection is counted, even short ones. Too many drops in a time window (by default 3 in 60 minutes) alert as "Línea telefónica inestable", once per window.
+- Drops in the last 24 hours and 7 days, and minutes down, shown in the panel; they survive App restarts.
+
 ## 0.4.0
 
 Phase 5: trunk monitoring.

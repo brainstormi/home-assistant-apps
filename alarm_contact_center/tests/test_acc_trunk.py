@@ -143,6 +143,40 @@ class TrunkTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.01)
         self.assertEqual(port.notifications, [])
 
+    async def test_flapping_alerts_once_per_window(self):
+        port = FakePort()
+        m = TrunkMonitor(self.store, port, self.log, FakeEngine(), Path(self.tmp.name) / "t.json", time_scale=1)
+        eid = "binary_sensor.siptrunk_registered"
+        for _ in range(5):  # five short drops, none long enough for the "down" alert
+            await m.on_entity_state(eid, "unavailable")
+            await m.on_entity_state(eid, "on")
+        await asyncio.sleep(0.01)
+        self.assertEqual([n[1] for n in port.notifications], ["Línea telefónica inestable"])
+        self.assertIn("3 veces", port.notifications[0][2])
+        st = m.status()["stability"]["trunk"]
+        self.assertEqual(st["drops_24h"], 5)
+        self.assertIsNotNone(st["last_drop"])
+        self.assertEqual(m.status()["stability"]["ami"]["drops_24h"], 0)
+
+    async def test_drops_survive_restart_and_expire(self):
+        port = FakePort()
+        m = TrunkMonitor(self.store, port, self.log, FakeEngine(), Path(self.tmp.name) / "t.json", time_scale=1)
+        await m.on_entity_state("binary_sensor.ami_connected", "off")
+        await m.on_entity_state("binary_sensor.ami_connected", "on")
+        again = TrunkMonitor(self.store, port, self.log, FakeEngine(), Path(self.tmp.name) / "t.json", time_scale=1)
+        self.assertEqual(again.status()["stability"]["ami"]["drops_24h"], 1)
+        import time as _t
+        later = again.stability(now=_t.time() + 2 * 86400)
+        self.assertEqual(later["ami"]["drops_24h"], 0)
+        self.assertEqual(later["ami"]["drops_7d"], 1)
+
+    async def test_flap_settings_validated(self):
+        from app.store import ValidationError, clean_settings
+        with self.assertRaises(ValidationError):
+            clean_settings({"flap_alert_count": 1})
+        with self.assertRaises(ValidationError):
+            clean_settings({"flap_window_min": 5})
+
     async def test_other_entities_ignored(self):
         port = FakePort()
         m = self.monitor(port)
