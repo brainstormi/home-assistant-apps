@@ -22,6 +22,7 @@ token and the SMTP account set in the settings.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import html
 import logging
@@ -46,10 +47,10 @@ VIDEO_POLLS = 120  # ...for up to 20 minutes
 STATUS_TEXT = {
     "waiting": "esperando antes de llamar",
     "calling": "llamando a los contactos",
-    "acknowledged": "atendida",
+    "acknowledged": "gestionada",
     "disarmed": "desarmada",
-    "no_answer": "nadie la ha atendido",
-    "trunk_down": "sin línea telefónica",
+    "no_answer": "nadie ha aceptado gestionarla",
+    "trunk_down": "sin línea telefónica: se avisa por notificaciones",
     "cancelled": "avisos parados desde el panel",
     "failed": "error en los avisos",
     "timeout": "sin respuesta en el tiempo máximo",
@@ -84,7 +85,7 @@ def title(inc: dict[str, Any]) -> str:
 def status_line(inc: dict[str, Any]) -> str:
     status = STATUS_TEXT.get(inc.get("status", ""), inc.get("status", ""))
     if inc.get("status") == "acknowledged" and inc.get("acknowledged_by"):
-        status = f"atendida por {inc['acknowledged_by']}"
+        status = f"gestionada por {inc['acknowledged_by']}"
     extra = PHASE_TEXT.get(inc.get("phase", ""), "")
     return f"Estado: {status}." + (f" {extra}" if extra else "")
 
@@ -111,7 +112,7 @@ KIND_DOT = {
     "confirmed": "🟢", "acknowledged": "🟢", "disarmed": "🟢", "resolved": "🟢", "trunk_ok": "🟢",
     "sensor": "🟡", "profile": "🟡", "voicemail": "🟡", "round": "🟡", "answered": "🟡", "failed": "🟡",
     "timeout": "🟡", "limit": "🟡",
-    "call": "🔵",
+    "call": "🔵", "burst": "🔵", "telegram": "🔵", "retry": "🟡", "skip": "⚪",
     "closed": "🏁",
 }
 
@@ -211,18 +212,34 @@ class Telegram:
             raise NotifyError(desc)
         return body.get("result")
 
-    async def send(self, chat_id: str, text: str, silent: bool = False, html_mode: bool = False) -> int:
+    async def send(self, chat_id: str, text: str, silent: bool = False, html_mode: bool = False,
+                   button: str = "") -> int:
         data: dict[str, Any] = {"chat_id": chat_id, "text": text, "disable_notification": silent}
         if html_mode:
             data["parse_mode"] = "HTML"
+        if button:
+            data["reply_markup"] = take_charge_markup(button)
         result = await self._call("sendMessage", data)
         return int(result["message_id"])
 
-    async def edit(self, chat_id: str, message_id: int, text: str, html_mode: bool = True) -> None:
-        data: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    async def edit(self, chat_id: str, message_id: int, text: str, html_mode: bool = True, button: str = "") -> None:
+        # Without reply_markup an edit removes the button: passing it keeps it.
+        data: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text,
+                                "reply_markup": take_charge_markup(button) if button else {"inline_keyboard": []}}
         if html_mode:
             data["parse_mode"] = "HTML"
         await self._call("editMessageText", data)
+
+    async def answer_callback(self, callback_id: str, text: str) -> None:
+        await self._call("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:190]})
+
+    async def updates(self, offset: int, timeout: int = 25) -> list[dict[str, Any]]:
+        old, self.timeout = self.timeout, timeout + 15
+        try:
+            return await self._call("getUpdates", {"offset": offset, "timeout": timeout,
+                                                   "allowed_updates": ["message", "callback_query"]}) or []
+        finally:
+            self.timeout = old
 
     async def video(self, chat_id: str, data: bytes, caption: str) -> None:
         import aiohttp
@@ -301,6 +318,30 @@ def send_email(settings: dict[str, Any], to: str, subject: str, plain: str, body
         raise NotifyError(str(err) or err.__class__.__name__) from err
 
 
+TAKE_CHARGE = "ACC_ACK"
+TAKE_CHARGE_BUTTON = "✋ Yo me encargo"
+TAKE_CHARGE_EXPLAIN = "Si pulsas «Yo me encargo», dejaremos de llamar y avisar al resto de contactos. La alarma no se desarma."
+TAKE_CHARGE_WORDS = ("yo me encargo", "me encargo", "lo atiendo", "lo gestiono", "yo lo gestiono")
+
+
+def take_charge_markup(incident_id: str) -> dict[str, Any]:
+    return {"inline_keyboard": [[{"text": TAKE_CHARGE_BUTTON, "callback_data": f"{TAKE_CHARGE}:{incident_id}"}]]}
+
+
+def take_charge_reply(result: dict[str, Any], name: str) -> str:
+    r = result.get("result")
+    if r == "ok":
+        return (f"✅ Gracias, {name}: has aceptado gestionar la alarma. Ya no se avisará a nadie más. "
+                "La alarma sigue activa hasta que se desarme.")
+    if r == "already":
+        if result.get("by") == name:
+            return "Ya habías aceptado gestionar la alarma. Sigue activa hasta que se desarme."
+        return f"Ya se encarga {result.get('by')} desde las {result.get('at')}. La alarma sigue activa hasta que se desarme."
+    if r == "disarmed":
+        return "La alarma ya está desarmada: no hace falta hacer nada."
+    return "No hay ninguna alarma abierta ahora mismo."
+
+
 # ------------------------------------------------------------------ notifier
 class _State:
     def __init__(self) -> None:
@@ -331,6 +372,9 @@ class Notifier:
         self._telegram = telegram  # tests inject fakes
         self._mailer = mailer
         self.states: dict[str, _State] = {}
+        self.engine: Any = None  # set by the App: take charge from Telegram
+        self.seen_chats: dict[str, dict[str, Any]] = {}  # chats that wrote to the bot (for the chat finder)
+        self._offset = 0
         self.tasks: set[asyncio.Task] = set()
 
     # ------------------------------------------------------------ plumbing
@@ -423,12 +467,14 @@ class Notifier:
     async def _telegram_update(self, inc: Any, st: _State, tg: Any, data: dict[str, Any], people: list[dict[str, Any]]) -> None:
         chats = [c for c in people if c["telegram_chat_id"]]
         text = telegram_text(data)
+        button = self._button(data)
         for c in chats:
             chat = c["telegram_chat_id"]
             if chat not in st.tg_messages:
                 try:
-                    st.tg_messages[chat] = await tg.send(chat, text, html_mode=True)
-                    st.tg_text[chat] = text
+                    text_ = text + ("\n\n" + html.escape(TAKE_CHARGE_EXPLAIN) if button else "")
+                    st.tg_messages[chat] = await tg.send(chat, text_, html_mode=True, button=button)
+                    st.tg_text[chat] = text_
                 except Exception as err:  # noqa: BLE001
                     self._failed(inc, f"Telegram a {c['name']}", err)
                     st.tg_messages[chat] = 0  # do not retry the live message on every change
@@ -473,14 +519,16 @@ class Notifier:
             if wait > 0:
                 await asyncio.sleep(wait * self.time_scale)
             st.last_edit = time.monotonic()
-            text = telegram_text(inc.to_dict())
+            data = inc.to_dict()
+            button = self._button(data)
+            text = telegram_text(data) + ("\n\n" + html.escape(TAKE_CHARGE_EXPLAIN) if button else "")
             for c in chats:
                 chat = c["telegram_chat_id"]
                 mid = st.tg_messages.get(chat)
                 if not mid or st.tg_text.get(chat) == text:
                     continue
                 try:
-                    await tg.edit(chat, mid, text)
+                    await tg.edit(chat, mid, text, button=button)
                     st.tg_text[chat] = text
                 except Exception as err:  # noqa: BLE001
                     log.warning("[%s] Telegram edit for %s failed: %s", inc.id, c["name"], err)
@@ -529,13 +577,95 @@ class Notifier:
                 log.warning("[%s] video by Telegram to %s failed: %s", inc.id, c["name"], err)
 
     @staticmethod
+    def _button(data: dict[str, Any]) -> str:
+        """The incident id for the "Yo me encargo" button while someone may still take charge."""
+        if data.get("kind") not in ("alarm", "drill") or data.get("phase") == "closed":
+            return ""
+        if data.get("acknowledged_by") or data.get("disarmed"):
+            return ""
+        return str(data.get("id") or "")
+
+    async def alert_contact(self, inc: Any, contact: dict[str, Any]) -> None:
+        """No phone line: the contact's turn in the chain becomes a Telegram message."""
+        tg = self.telegram()
+        if tg is None:
+            raise NotifyError("falta el token del bot")
+        drill = "SIMULACRO · " if inc.kind == "drill" else ""
+        text = (f"🚨 {drill}{title(inc.to_dict())}\n"
+                f"No hay línea telefónica para llamarte, así que te avisamos por aquí.\n\n{TAKE_CHARGE_EXPLAIN}")
+        await tg.send(contact["telegram_chat_id"], text, button=inc.id)
+
+    # ------------------------------------------------------ bot updates
+    async def poll(self) -> None:
+        """Read what people send to the bot: "Yo me encargo" (button or text), and the
+        chats that wrote to it, for the chat finder."""
+        while True:
+            tg = self.telegram()
+            if tg is None:
+                await asyncio.sleep(30)
+                continue
+            try:
+                updates = await tg.updates(self._offset)
+            except Exception as err:  # noqa: BLE001
+                log.info("Telegram updates: %s", err)
+                await asyncio.sleep(15)
+                continue
+            for u in updates:
+                self._offset = max(self._offset, int(u.get("update_id", 0)) + 1)
+                try:
+                    await self.on_update(tg, u)
+                except Exception:  # noqa: BLE001
+                    log.exception("Telegram update failed")
+
+    async def on_update(self, tg: Any, u: dict[str, Any]) -> None:
+        cq = u.get("callback_query")
+        msg = (cq or {}).get("message") or u.get("message") or {}
+        chat = msg.get("chat") or {}
+        sender = (cq or {}).get("from") or msg.get("from") or {}
+        chat_id = str(chat.get("id") or "")
+        if chat_id:
+            name = " ".join(p for p in (chat.get("first_name"), chat.get("last_name")) if p) or chat.get("title") \
+                or chat.get("username") or sender.get("first_name") or chat_id
+            self.seen_chats[chat_id] = {"id": chat_id, "name": name, "type": str(chat.get("type") or ""), "t": time.time()}
+        if cq:
+            data = str(cq.get("data") or "")
+            if not data.startswith(TAKE_CHARGE + ":"):
+                return
+            reply = await self._take_charge(chat_id, data.split(":", 1)[1])
+            with contextlib.suppress(Exception):
+                await tg.answer_callback(str(cq.get("id")), reply.split(":")[0])
+            await tg.send(chat_id, reply)
+            return
+        text = " ".join(str(msg.get("text") or "").lower().replace("«", "").replace("»", "").split()).strip(".!¡ ")
+        if text in TAKE_CHARGE_WORDS:
+            inc = getattr(self.engine, "current", None)
+            await tg.send(chat_id, await self._take_charge(chat_id, inc.id if inc else ""))
+
+    async def _take_charge(self, chat_id: str, incident_id: str) -> str:
+        if self.engine is None or not incident_id:
+            return take_charge_reply({"result": "unknown"}, "")
+        contact = self.engine.contact_by_chat(chat_id)
+        if contact is None:
+            return "Este chat no está entre los contactos de la alarma."
+        result = await self.engine.take_charge(incident_id, contact["id"], "Telegram")
+        return take_charge_reply(result, contact["name"])
+
+    @staticmethod
     def _milestones(data: dict[str, Any]) -> list[tuple[str, str]]:
         drill = "Simulacro: " if data.get("kind") == "drill" else ""
         out = []
         if data.get("status") == "acknowledged" and data.get("acknowledged_by"):
-            out.append(("ack", f"✅ {drill}{data['acknowledged_by']} atiende la alarma. Sigue abierta hasta que se desarme."))
-        elif data["phase"] != "calling" and data.get("status") in ("no_answer", "timeout", "trunk_down", "failed"):
-            out.append(("noack", f"⚠️ {drill}Nadie ha atendido la alarma ({STATUS_TEXT.get(data['status'], data['status'])})."))
+            out.append(("ack", f"✅ {drill}{data['acknowledged_by']} ha aceptado gestionar la alarma. "
+                               "Ya no se avisará a nadie más; sigue activa hasta que se desarme."))
+        elif data["phase"] != "calling" and data.get("status") == "trunk_down":
+            out.append(("noack", f"⚠️ {drill}No se ha podido llamar a nadie: la línea telefónica no funciona, "
+                                 "y nadie ha aceptado gestionar la alarma."))
+        elif data["phase"] != "calling" and data.get("status") in ("no_answer", "timeout", "failed"):
+            out.append(("noack", f"⚠️ {drill}Nadie ha aceptado gestionar la alarma ({STATUS_TEXT.get(data['status'], data['status'])})."))
+        if any(e.get("kind") == "trunk_down" for e in data.get("events") or []):
+            out.append(("line", f"📵 {drill}La línea telefónica no funciona: no se puede llamar. Se avisa por notificaciones."))
+        if any(e.get("kind") == "trunk_ok" for e in data.get("events") or []):
+            out.append(("line_ok", f"📞 {drill}La línea telefónica vuelve a funcionar."))
         if data.get("disarmed"):
             out.append(("disarmed", f"🔓 {drill}Alarma desarmada."))
         if data["phase"] == "closed":
@@ -637,8 +767,9 @@ class Notifier:
 class PanelTools:
     """What the panel's buttons call (on the asyncio loop)."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, notifier: Any = None) -> None:
         self.store = store
+        self.notifier = notifier  # its poller reads the bot's updates: the chats come from it
 
     def _bot(self) -> Telegram:
         token = self.store.settings().get("telegram_token")
@@ -668,7 +799,9 @@ class PanelTools:
         bot = self._bot()
         try:
             me = await bot.me()
-            chats = await bot.recent_chats()
+            fresh = [] if self.notifier is not None else await bot.recent_chats()
         except NotifyError as err:
             raise RuntimeError(f"Telegram responde: {err}") from err
-        return {"bot": me.get("username") or "", "chats": chats}
+        seen = list((self.notifier.seen_chats if self.notifier is not None else {}).values())
+        chats = {c["id"]: {k: c[k] for k in ("id", "name", "type")} for c in seen + fresh}
+        return {"bot": me.get("username") or "", "chats": list(chats.values())}

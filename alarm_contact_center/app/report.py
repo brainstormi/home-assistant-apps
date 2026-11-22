@@ -26,10 +26,10 @@ ATTR_TOPIC = "alarm_contact_center/incident/attributes"
 STATUS_TEXT = {
     "waiting": "en curso, esperando antes de llamar",
     "calling": "en curso, llamando",
-    "acknowledged": "atendida",
+    "acknowledged": "gestionada",
     "disarmed": "desactivada",
-    "no_answer": "nadie la atendió",
-    "trunk_down": "sin línea telefónica",
+    "no_answer": "nadie aceptó gestionarla",
+    "trunk_down": "sin línea telefónica, nadie aceptó gestionarla",
     "cancelled": "cancelada",
     "failed": "con errores",
     "timeout": "sin respuesta en el tiempo máximo",
@@ -94,7 +94,7 @@ def summary(inc: dict[str, Any] | None, now: dt.datetime | None = None) -> str:
         parts.append(f"por {inc['sensor']}")
     status = STATUS_TEXT.get(inc.get("status", ""), inc.get("status", ""))
     if inc.get("status") == "acknowledged" and inc.get("acknowledged_by"):
-        status = f"atendida por {inc['acknowledged_by']}"
+        status = f"gestionada por {inc['acknowledged_by']}"
     if inc.get("phase") == "open":
         status += ", pendiente de desarmar"
     elif inc.get("phase") == "closing" and inc.get("status") != "disarmed":

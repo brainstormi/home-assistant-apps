@@ -153,7 +153,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(inc.task, 2)
         self.assertEqual(inc.status, "acknowledged")
         self.assertEqual(inc.acknowledged_by, "Marta")
-        self.assertEqual(port.notes, [("abc", "Te informo de que Marta ya está atendiendo la alarma.")])
+        self.assertEqual(port.notes, [("abc", "Te informo de que Marta ha aceptado gestionar la alarma.")])
         self.assertEqual(port.resolves, [True])  # the notice is closed, no more confirmation
         self.assertEqual(len(port.calls), 1)  # no more calls after the button
         # The button never disarms anything: the engine has no way to do it.
@@ -171,12 +171,16 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("xyz", port.hangups)
         self.assertEqual(port.notes, [])
 
-    async def test_trunk_down_stops_calls(self):
-        port = FakePort({"600000001": [{"resultado": "failed", "detalle": {"dialstatus": "CHANUNAVAIL"}}]})
+    async def test_trunk_down_alerts_by_notifications(self):
+        down = {"resultado": "failed", "detalle": {"dialstatus": "CHANUNAVAIL"}}
+        port = FakePort({"600000001": [dict(down) for _ in range(9)], "600000002": [dict(down) for _ in range(9)],
+                         "600000003": [dict(down) for _ in range(9)]})
         inc = await self.run_alarm(self.engine(port))
         self.assertEqual(inc.status, "trunk_down")
-        self.assertEqual(len(port.calls), 1)
+        # 3 tries for the first call (2 retries), then a single try per contact
+        self.assertEqual([c["numero"] for c in port.calls][:3], ["600000001"] * 3)
         self.assertTrue(any("no funcionan" in n[1] for n in port.notifications))
+        self.assertTrue(any(e["kind"] == "burst" for e in inc.events))
 
     async def test_busy_is_not_trunk_down(self):
         port = FakePort({"600000001": [{"resultado": "failed", "detalle": {"dialstatus": "BUSY"}}],
@@ -324,7 +328,8 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await engine.on_notification_action(f"{ACK_PREFIX}:{engine.current.id}:{self.luis['id']}")
         port.gate.set()
         await asyncio.wait_for(engine.current.task, 2)
-        self.assertEqual(port.notes, [("o1", "Gracias, ya consta que estás atendiendo la alarma.")])
+        self.assertEqual(port.notes, [("o1", "Gracias. Has aceptado gestionar la alarma: ya no avisaremos a nadie más. "
+                                             "La alarma sigue activa hasta que se desarme.")])
 
     async def test_voicemail_and_silence(self):
         self.store.save_settings({"rounds": 1})

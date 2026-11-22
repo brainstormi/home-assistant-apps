@@ -18,15 +18,21 @@ from tests.test_acc_frigate import MediaPort  # noqa: E402
 class FakeTelegram:
     def __init__(self):
         self.sent, self.edits, self.photos, self.videos = [], [], [], []
+        self.buttons, self.edit_buttons, self.answers = [], [], []
         self.next_id = 100
 
-    async def send(self, chat, text, silent=False, html_mode=False):
+    async def send(self, chat, text, silent=False, html_mode=False, button=""):
         self.next_id += 1
         self.sent.append((chat, text))
+        self.buttons.append((chat, button))
         return self.next_id
 
-    async def edit(self, chat, mid, text, html_mode=True):
+    async def edit(self, chat, mid, text, html_mode=True, button=""):
         self.edits.append((chat, mid, text))
+        self.edit_buttons.append(button)
+
+    async def answer_callback(self, cid, text):
+        self.answers.append(text)
 
     async def photo(self, chat, data, caption):
         self.photos.append((chat, caption))
@@ -77,12 +83,12 @@ class NotifierTests(unittest.IsolatedAsyncioTestCase):
         # Telegram: live message, ack milestone, the photo
         live = [t for c, t in self.tg.sent if t.startswith("<b>🚨")]
         self.assertEqual(len(live), 1)
-        self.assertTrue(any("Pablo atiende la alarma" in t for _, t in self.tg.sent))
+        self.assertTrue(any("Pablo ha aceptado gestionar la alarma" in t for _, t in self.tg.sent))
         self.assertEqual([c for c, _ in self.tg.photos], ["1111"])
         # first email to both, with the timeline so far
         self.assertEqual(sorted(m[0] for m in self.mails), ["ana@example.com", "pablo@example.com"])
         self.assertTrue(all(m[1].startswith("Aviso:") for m in self.mails))
-        self.assertIn("Pablo confirma", self.mails[0][2])
+        self.assertIn("Pablo ha aceptado gestionar la alarma", self.mails[0][2])
         self.mails.clear()
 
         await self.engine.on_alarm_state("disarmed")
@@ -159,7 +165,7 @@ class RenderTests(unittest.TestCase):
 
     def test_telegram_and_email_text(self):
         text = telegram_text(self.INC)
-        self.assertIn("<b>Estado: atendida por Luis. Sigue abierta hasta que se desarme.</b>", text)
+        self.assertIn("<b>Estado: gestionada por Luis. Sigue abierta hasta que se desarme.</b>", text)
         self.assertIn("🟢 <code>16:06:29</code> Luis confirma el aviso", text)
         self.assertIn("🔴 <code>16:05:23</code> Alarma disparada <i>(Sensor: Puerta)</i>", text)
         subject, plain, body = email_parts(self.INC, final=False)

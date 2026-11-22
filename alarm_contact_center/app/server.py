@@ -88,8 +88,8 @@ class App:
     def cancel(self) -> None:
         self._on_loop("cancel")
 
-    def start_drill(self, contact_ids: list[str], sensor: str) -> dict[str, Any]:
-        return self._on_loop("start_drill", contact_ids, sensor)
+    def start_drill(self, contact_ids: list[str], sensor: str, line_down: bool = False) -> dict[str, Any]:
+        return self._on_loop("start_drill", contact_ids, sensor, line_down)
 
     def notify_test(self, channel: str, to: str) -> dict[str, Any]:
         if self.notify_tools is None:
@@ -462,7 +462,8 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
                 ids = body.get("contact_ids")
                 if not isinstance(ids, list):
                     raise ValueError("Falta la lista de contactos.")
-                self._send_json(app.start_drill([str(i) for i in ids], str(body.get("sensor") or "")), HTTPStatus.ACCEPTED)
+                self._send_json(app.start_drill([str(i) for i in ids], str(body.get("sensor") or ""),
+                                                bool(body.get("line_down"))), HTTPStatus.ACCEPTED)
             elif method == "POST" and parts == ["drill", "disarm"]:
                 app.simulate_disarm()
                 self._send_json({"ok": True})
@@ -554,10 +555,13 @@ async def _run() -> None:
         r.load()
     engine.listeners.append(reporter.on_change)
     notifier = Notifier(store, media, frigate=port_.frigate)
+    notifier.engine = engine
     engine.listeners.append(notifier.on_change)
+    engine.telegram_alert = notifier.alert_contact
+    engine.line_down_hint = trunk.line_down
     loop = asyncio.get_running_loop()
     card = CardInstaller()
-    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate, PanelTools(store), notifier, card)
+    app = App(store, HomeAssistant(), engine, loop, incidents, trunk, media, watcher, port_.frigate, PanelTools(store, notifier), notifier, card)
 
     allow_any = os.environ.get("ACC_ALLOW_ANY_CLIENT") == "1"
     port = int(os.environ.get("ACC_PORT", "8099"))
@@ -566,11 +570,13 @@ async def _run() -> None:
     log.info("Alarm Contact Center %s: panel listening on port %d", __version__, port)
     scheduler = asyncio.create_task(trunk.scheduler())
     cleaner = asyncio.create_task(_clean_media(media, store))
+    poller = asyncio.create_task(notifier.poll())
     try:
         await conn.run(lambda: wire(conn, engine, store, trunk, watcher, reporter, card))
     finally:
         scheduler.cancel()
         cleaner.cancel()
+        poller.cancel()
         server.shutdown()
         server.server_close()
 
