@@ -864,7 +864,7 @@ async function importConfig(ev) {
 const KIND_LABEL = { alarm: "Alarma", drill: "Simulacro", test: "Prueba", trunk: "Línea" };
 const KIND_COLOR = {
   triggered: "bad", trunk_down: "bad", error: "bad", confirmed: "ok", acknowledged: "ok", disarmed: "ok",
-  trunk_ok: "ok", burst: "accent", telegram: "accent", retry: "warn", skip: "", person: "bad", sensor: "warn", closed: "", call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
+  trunk_ok: "ok", burst: "accent", telegram: "accent", retry: "warn", skip: "", restart: "warn", resume: "accent", person: "bad", sensor: "warn", closed: "", call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
 };
 
 function fmtTime(iso) {

@@ -26,6 +26,8 @@ import contextlib
 import datetime as dt
 import html
 import logging
+import os
+import json
 import re
 import smtplib
 import ssl
@@ -112,7 +114,7 @@ KIND_DOT = {
     "confirmed": "🟢", "acknowledged": "🟢", "disarmed": "🟢", "resolved": "🟢", "trunk_ok": "🟢",
     "sensor": "🟡", "profile": "🟡", "voicemail": "🟡", "round": "🟡", "answered": "🟡", "failed": "🟡",
     "timeout": "🟡", "limit": "🟡",
-    "call": "🔵", "burst": "🔵", "telegram": "🔵", "retry": "🟡", "skip": "⚪",
+    "call": "🔵", "burst": "🔵", "telegram": "🔵", "retry": "🟡", "skip": "⚪", "restart": "🟡", "resume": "🔵",
     "closed": "🏁",
 }
 
@@ -373,6 +375,7 @@ class Notifier:
         self._mailer = mailer
         self.states: dict[str, _State] = {}
         self.engine: Any = None  # set by the App: take charge from Telegram
+        self.state_path: Any = None  # Path: what was already sent, kept across restarts
         self.seen_chats: dict[str, dict[str, Any]] = {}  # chats that wrote to the bot (for the chat finder)
         self._offset = 0
         self.tasks: set[asyncio.Task] = set()
@@ -447,6 +450,47 @@ class Notifier:
     async def _update(self, inc: Any, st: _State) -> None:
         async with st.lock:
             await self._update_locked(inc, st)
+        self.save_state()
+
+    # ------------------------------------------------------ restarts
+    KEPT = ("armed", "skipped", "tg_messages", "tg_text", "first_email", "final_email", "done")
+    KEPT_SETS = ("photos_sent", "videos", "milestones")
+
+    def save_state(self) -> None:
+        """What was already sent for open incidents: after a restart the same Telegram
+        messages keep being edited and no email is sent twice."""
+        if self.state_path is None:
+            return
+        data = {}
+        for inc_id, st in self.states.items():
+            if st.done:
+                continue
+            entry = {k: getattr(st, k) for k in self.KEPT}
+            entry.update({k: sorted(getattr(st, k)) for k in self.KEPT_SETS})
+            data[inc_id] = entry
+        try:
+            tmp = self.state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.state_path)
+        except OSError as err:
+            log.warning("Could not keep the notification state: %s", err)
+
+    def load_state(self) -> None:
+        if self.state_path is None:
+            return
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        for inc_id, entry in (data or {}).items():
+            st = _State()
+            for k in self.KEPT:
+                if k in entry:
+                    setattr(st, k, entry[k])
+            for k in self.KEPT_SETS:
+                setattr(st, k, set(entry.get(k) or []))
+            st.tg_messages = {str(c): int(m) for c, m in (st.tg_messages or {}).items()}
+            self.states[inc_id] = st
 
     async def _update_locked(self, inc: Any, st: _State) -> None:
         data = inc.to_dict()

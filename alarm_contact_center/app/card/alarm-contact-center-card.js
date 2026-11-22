@@ -24,7 +24,7 @@ const DOT = {
   confirmed: "ok", acknowledged: "ok", disarmed: "ok", resolved: "ok", trunk_ok: "ok",
   sensor: "warn", profile: "warn", voicemail: "warn", round: "warn", answered: "warn",
   failed: "warn", timeout: "warn", limit: "warn",
-  call: "info", burst: "info", telegram: "info", retry: "warn", closed: "muted",
+  call: "info", burst: "info", telegram: "info", retry: "warn", restart: "warn", resume: "info", closed: "muted",
 };
 
 const PHASE = {

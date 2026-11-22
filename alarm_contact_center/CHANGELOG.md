@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0
+
+- An open incident survives a restart of the App: it is saved on every change (and every 30 s) and, once connected again, it carries on according to the alarm: the calls resume from the next contact if nobody had taken charge, it stays open if someone had, and it is marked disarmed if that happened while the App was stopped. The timeline notes the gap; the same Telegram messages keep being edited and no email is sent twice.
+
 ## 0.12.0
 
 - The phone assistant knows the incident: the incident sensors carry `assistant_context` (state and timeline in Spanish, up to 2000 characters, most recent kept), and alarm and drill calls pass `contexto_entidad` so the assistant reads it live (Asterisk Realtime Bridge 0.11+).
