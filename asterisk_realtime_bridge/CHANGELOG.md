@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.10.0
+- **Trunk test:** new command `trunk_test` (`test_id`, `number` = your own line, `timeout`). The bridge calls your own line through the trunk (new `bridge-trunk-test` context); if the call comes back in, the incoming context reports it and hangs up without answering. Event `asterisk_realtime_bridge_trunk` with `result` `ok`, `out_only` or `failed`, and the `dialstatus`. One test at a time. See DOCS, "Trunk test".
+
 ## 0.9.2
 - Voicemail recognised by the assistant: it reports it in silence (no filler sentence), and the bridge itself leaves `voicemail_message` with the fallback voice, exactly as written, once the greeting and its beep are over. `voicemail_message_left` is true only when the whole message was played. Before, the assistant said a filler sentence and the message could be lost.
 
