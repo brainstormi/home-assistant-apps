@@ -31,7 +31,7 @@ class FakeHA:
     def notify_targets(self):
         return ["mobile_app_phone"]
 
-    def status(self, states=None):
+    def status(self, states=None, entities=None):
         return {"ami": {"entity_id": "binary_sensor.ami_connected", "state": "on", "since": None}}
 
     def pin_status(self, entity_id, states=None):

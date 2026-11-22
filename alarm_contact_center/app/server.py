@@ -33,19 +33,26 @@ class App:
     """API logic, kept apart from the HTTP server so it can be tested."""
 
     def __init__(self, store: Store, ha: HomeAssistant, engine: Any = None, loop: asyncio.AbstractEventLoop | None = None,
-                 incidents: Any = None) -> None:
+                 incidents: Any = None, trunk: Any = None) -> None:
         self.store = store
+        self.trunk = trunk
         self.ha = ha
         self.engine = engine  # None in phase-1 style tests: chain features answer 503
         self.loop = loop
         self.incidents = incidents
 
-    def _on_loop(self, method: str, *args: Any, timeout: float = 10) -> Any:
-        """Run an engine coroutine on the asyncio loop from an HTTP thread."""
-        if self.engine is None or self.loop is None:
+    def _on_loop(self, method: str, *args: Any, timeout: float = 10, target: Any = None) -> Any:
+        """Run an engine (or trunk monitor) coroutine on the asyncio loop from an HTTP thread."""
+        target = self.engine if target is None else target
+        if target is None or self.loop is None:
             raise RuntimeError("La cadena de avisos no está disponible.")
-        fut: Future = asyncio.run_coroutine_threadsafe(getattr(self.engine, method)(*args), self.loop)
+        fut: Future = asyncio.run_coroutine_threadsafe(getattr(target, method)(*args), self.loop)
         return fut.result(timeout)
+
+    def trunk_test(self) -> dict[str, Any]:
+        if self.trunk is None:
+            raise RuntimeError("La vigilancia de la troncal no está disponible.")
+        return self._on_loop("run_test", True, timeout=120, target=self.trunk)
 
     def start_test(self, contact_id: str) -> dict[str, Any]:
         return self._on_loop("start_test", contact_id)
@@ -118,7 +125,9 @@ class App:
             "persons": persons,
             "notify_targets": self.ha.notify_targets(),
             "sensors": self.ha.alarm_sensors(states) if hasattr(self.ha, "alarm_sensors") else [],
-            "status": self.ha.status(states),
+            "status": self.ha.status(states, {"trunk": self.store.settings()["trunk_entity"],
+                                              "ami": self.store.settings()["ami_entity"]}),
+            "trunk": self.trunk.status() if self.trunk is not None else None,
             "defaults": {"bridge_addon": default_bridge_addon()},
             "pins": {
                 "mode": pins.mode,
@@ -252,6 +261,8 @@ def make_handler(app: App, allow_any_client: bool = False) -> type[BaseHTTPReque
             elif method == "POST" and parts == ["drill", "disarm"]:
                 app.simulate_disarm()
                 self._send_json({"ok": True})
+            elif method == "POST" and parts == ["trunk", "test"]:
+                self._send_json(app.trunk_test())
             elif method == "POST" and parts == ["cancel"]:
                 app.cancel()
                 self._send_json({"ok": True})
@@ -302,23 +313,28 @@ async def _run() -> None:
     # Imported here so the panel and its tests work without aiohttp installed.
     from .engine import Engine, IncidentLog
     from .ha_ws import HAConnection, HAPort, wire
+    from .trunk import TrunkMonitor
 
     data_dir = Path(os.environ.get("ACC_DATA_DIR", "/data"))
     store = Store(data_dir / "contact_center.json")
     incidents = IncidentLog(data_dir / "incidents.json")
     conn = HAConnection()
-    engine = Engine(store, HAPort(conn, store), incidents)
+    port_ = HAPort(conn, store)
+    engine = Engine(store, port_, incidents)
+    trunk = TrunkMonitor(store, port_, incidents, engine, data_dir / "trunk.json")
     loop = asyncio.get_running_loop()
-    app = App(store, HomeAssistant(), engine, loop, incidents)
+    app = App(store, HomeAssistant(), engine, loop, incidents, trunk)
 
     allow_any = os.environ.get("ACC_ALLOW_ANY_CLIENT") == "1"
     port = int(os.environ.get("ACC_PORT", "8099"))
     server = serve(app, port=port, allow_any_client=allow_any)
     threading.Thread(target=server.serve_forever, name="panel", daemon=True).start()
     log.info("Alarm Contact Center %s: panel listening on port %d", __version__, port)
+    scheduler = asyncio.create_task(trunk.scheduler())
     try:
-        await conn.run(lambda: wire(conn, engine, store))
+        await conn.run(lambda: wire(conn, engine, store, trunk))
     finally:
+        scheduler.cancel()
         server.shutdown()
         server.server_close()
 

@@ -40,6 +40,15 @@ It can only be enabled for Home Assistant persons that have a phone number. When
 
 To let the App know the PIN mode, set the entity that reports it in **Ajustes → Asterisk Realtime Bridge**. That entity exposes the mode (`global` or `individual`) and the persons with a PIN, never the PINs themselves.
 
+## Trunk monitoring
+
+Two checks, set up in **Ajustes → Vigilancia de la troncal**:
+
+- **Registration:** the trunk registration and the Asterisk connection entities (by default `binary_sensor.siptrunk_registered` and `binary_sensor.ami_connected`). If either stays off for the configured minutes, everyone with the HA app is told, and again when it comes back.
+- **Real test call:** at the chosen time, the App sends the Bridge `{"action": "trunk_test", "test_id": "...", "number": "<the line's own number>", "timeout": 20}`. The Bridge calls that number through the trunk; the call must come back in on the same line and be dropped before it is answered. It answers with the event `asterisk_realtime_bridge_trunk`: `{"test_id": "...", "result": "ok" | "out_only" | "failed", "dialstatus": "..."}`. `ok`: it went out and came back. `out_only`: the operator took the call but it did not come back. `failed`: it never left (`CHANUNAVAIL`, `CONGESTION`...). A failed test alerts once; the recovery is announced too. While the Bridge does not answer these tests, the panel says so and nothing is alerted.
+
+Tests never run while an alarm, a drill or a test call is using the line: they wait until it is free.
+
 ## Data
 
 The configuration is stored in `/data/contact_center.json` and the last 50 incidents in `/data/incidents.json`, inside the App; both are included in Home Assistant backups. **Ajustes → Copia de la configuración** exports and imports contacts and settings (the file contains phone numbers and emails).

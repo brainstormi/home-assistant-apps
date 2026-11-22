@@ -105,7 +105,28 @@ function channels(c) {
   return out;
 }
 
-// ---------------------------------------------------------------------- home
+// --------------------------------------------------------------------- home
+const TRUNK_RESULT = { ok: ["Funciona", "ok"], out_only: ["Sale, no vuelve", "warn"], failed: ["No sale", "bad"], timeout: ["Sin respuesta", "warn"] };
+
+function trunkTile(s, regValue, regClass) {
+  const t = s.trunk;
+  let value = regValue, cls = regClass, detail = "Registro de la troncal";
+  if (t && t.last_test) {
+    const [v, c] = TRUNK_RESULT[t.last_test.result] || [t.last_test.result, "warn"];
+    if (regClass !== "bad") { value = v; cls = c; }
+    detail = `Prueba: ${fmtTime(t.last_test.t)} · ${t.last_test.text}`;
+  } else if (t && !t.number_set) {
+    detail = "Sin prueba real: falta el número propio de la línea en Ajustes";
+    if (regClass === "ok") cls = "warn";
+  } else if (t && t.next_test) {
+    detail = `Primera prueba: ${fmtTime(t.next_test)}`;
+  }
+  if (t && Object.keys(t.down_since || {}).length) { value = "Caída"; cls = "bad"; }
+  return el("div", { class: "tile" },
+    el("div", { class: "label" }, el("span", { class: "dot " + cls, "aria-hidden": "true" }), "Línea telefónica"),
+    el("div", { class: "value" }, value),
+    el("div", { class: "small muted" }, detail));
+}
 function statusTiles(s) {
   const st = s.status;
   const tile = (title, value, detail, cls) =>
@@ -133,7 +154,7 @@ function statusTiles(s) {
     : s.pins.mode === "global" ? "Un PIN común para gestionar" : "El Bridge aún no publica esta información";
 
   return el("div", { class: "tiles" },
-    tile("Troncal (registro)", trunkV, "La prueba real de llamada llega en una fase posterior", trunkC),
+    trunkTile(s, trunkV, trunkC),
     tile("Asterisk (AMI)", amiV, st.ami.entity_id, amiC),
     tile("Asistente IA", openai[0], "Si falla OpenAI: Piper y Whisper locales", openai[1]),
     tile("Bridge · PIN", pinMode[0], pinDetail, pinMode[1]),
@@ -234,8 +255,18 @@ function showHome() {
 const STATUS_TEXT = {
   waiting: "Esperando antes de llamar", calling: "Llamando", acknowledged: "Atendida",
   disarmed: "Desarmada", no_answer: "Nadie ha confirmado", trunk_down: "Línea telefónica caída",
-  cancelled: "Cancelada", failed: "Error",
+  cancelled: "Cancelada", failed: "Error", ok: "Recuperada",
 };
+
+function trunkSummary(t) {
+  if (!t) return "";
+  const parts = [];
+  if (t.last_test) parts.push(`Última prueba: ${fmtTime(t.last_test.t)} · ${t.last_test.text}`);
+  else parts.push("Todavía no se ha hecho ninguna prueba.");
+  if (t.next_test) parts.push(`Próxima: ${fmtTime(t.next_test)}`);
+  if (t.last_test && t.last_test.result === "timeout" && !t.bridge_answers) parts.push("El Bridge no responde a la prueba: necesita una versión con el comando trunk_test.");
+  return parts.join(" · ");
+}
 
 function toggleTestBox() {
   const box = document.getElementById("test-box");
@@ -500,9 +531,24 @@ function showSettings(draft = null, errors = {}) {
   const answer = num("answer_timeout", st.answer_timeout, 20, 300);
   const pause = num("round_pause_min", st.round_pause_min, 0, 30);
   const trunkTest = el("select", { id: "trunk_test" },
-    [["daily", "Cada día a las 04:00"], ["every_6h", "Cada 6 horas"], ["weekly", "Cada semana"], ["off", "Desactivada"]]
+    [["daily", "Cada día"], ["every_6h", "Cada 6 horas"], ["weekly", "Cada semana (lunes)"], ["off", "Desactivada"]]
       .map(([v, t]) => el("option", { value: v, selected: st.trunk_test === v }, t)));
   const trunkAlert = num("trunk_alert_after_min", st.trunk_alert_after_min, 1, 60);
+  const trunkHour = el("select", { id: "trunk_test_hour" },
+    Array.from({ length: 24 }, (_, h) => el("option", { value: h, selected: Number(st.trunk_test_hour) === h }, `${String(h).padStart(2, "0")}:07`)));
+  const trunkNumber = el("input", { id: "trunk_test_number", type: "tel", value: st.trunk_test_number, inputmode: "tel", autocomplete: "off" });
+  const trunkEntity = el("input", { id: "trunk_entity", type: "text", value: st.trunk_entity });
+  const amiEntity = el("input", { id: "ami_entity", type: "text", value: st.ami_entity });
+  const trunkInfo = el("div", { class: "small muted" }, trunkSummary(STATE.trunk));
+  const trunkBtn = el("button", { class: "btn", type: "button", onclick: async () => {
+    trunkBtn.disabled = true; trunkInfo.textContent = "Probando… (hasta un minuto y medio)";
+    try {
+      const t = await api("POST", "api/trunk/test");
+      toast(t.text, t.result !== "ok" && t.result !== "out_only");
+      await reload(); trunkInfo.textContent = trunkSummary(STATE.trunk);
+    } catch (e) { toast(e.message, true); trunkInfo.textContent = trunkSummary(STATE.trunk); }
+    finally { trunkBtn.disabled = false; }
+  } }, "Probar la troncal ahora");
   const pre = num("frigate_pre_minutes", st.frigate_pre_minutes, 0, 30);
   const retention = num("media_retention_days", st.media_retention_days, 7, 365);
   const photos = el("input", { id: "send_photos_external", type: "checkbox", checked: st.send_photos_external });
@@ -528,6 +574,8 @@ function showSettings(draft = null, errors = {}) {
       answer_timeout: Number(answer.value), round_pause_min: Number(pause.value),
       alarm_entity: alarmEntity.value, call_script: callScript.value, bridge_addon: bridgeAddon.value,
       trunk_test: trunkTest.value, trunk_alert_after_min: Number(trunkAlert.value),
+      trunk_test_hour: Number(trunkHour.value), trunk_test_number: trunkNumber.value,
+      trunk_entity: trunkEntity.value, ami_entity: amiEntity.value,
       frigate_pre_minutes: Number(pre.value), media_retention_days: Number(retention.value),
       send_photos_external: photos.checked,
       incident_entities: entities.value.split(/[\s,]+/).filter(Boolean),
@@ -580,9 +628,15 @@ function showSettings(draft = null, errors = {}) {
 
     el("section", { class: "card", "aria-labelledby": "troncal-h" },
       el("h2", { id: "troncal-h", style: "font-size:17px" }, "Vigilancia de la troncal"),
+      el("span", { class: "small muted" }, "Dos comprobaciones: que la línea siga registrada (al momento) y una llamada real al número propio de la línea, que sale por la troncal y vuelve a entrar sin que suene nada. Si algo falla, avisa a quien tenga la app de HA."),
       el("div", { class: "grid" },
-        field("trunk_test", "Prueba real de llamada", trunkTest, "Llama al fijo de casa y comprueba que la llamada sale y vuelve.", errors.trunk_test),
-        field("trunk_alert_after_min", "Avisar si cae más de (min)", trunkAlert, null, errors.trunk_alert_after_min))),
+        field("trunk_test_number", "Número propio de la línea", trunkNumber, "El fijo de la troncal. Vacío = sin prueba real.", errors.trunk_test_number),
+        field("trunk_test", "Prueba real de llamada", trunkTest, null, errors.trunk_test),
+        field("trunk_test_hour", "Hora de la prueba", trunkHour, "Cada 6 horas: a esta hora y cada 6 h desde ella.", errors.trunk_test_hour),
+        field("trunk_alert_after_min", "Avisar si el registro cae más de (min)", trunkAlert, null, errors.trunk_alert_after_min),
+        field("trunk_entity", "Entidad del registro de la troncal", trunkEntity, null, errors.trunk_entity),
+        field("ami_entity", "Entidad de la conexión con Asterisk", amiEntity, null, errors.ami_entity)),
+      el("div", { class: "actions", style: "justify-content:flex-start;align-items:center" }, trunkBtn, trunkInfo)),
 
     el("section", { class: "card", "aria-labelledby": "cam-h" },
       el("h2", { id: "cam-h", style: "font-size:17px" }, "Cámaras (Frigate)"),
@@ -646,10 +700,10 @@ async function importConfig(ev) {
 }
 
 // ----------------------------------------------------------------- incidents
-const KIND_LABEL = { alarm: "Alarma", drill: "Simulacro", test: "Prueba" };
+const KIND_LABEL = { alarm: "Alarma", drill: "Simulacro", test: "Prueba", trunk: "Línea" };
 const KIND_COLOR = {
   triggered: "bad", trunk_down: "bad", error: "bad", confirmed: "ok", acknowledged: "ok", disarmed: "ok",
-  call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
+  trunk_ok: "ok", call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
 };
 
 function fmtTime(iso) {

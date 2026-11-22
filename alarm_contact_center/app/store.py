@@ -50,7 +50,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "answer_timeout": 60,
     "round_pause_min": 2,
     "trunk_test": "daily",
+    "trunk_test_hour": 4,
+    # The line's own number: the test calls it through the trunk and it must come
+    # back in. Empty = no real test (only the registration is watched).
+    "trunk_test_number": "",
     "trunk_alert_after_min": 2,
+    "trunk_entity": "binary_sensor.siptrunk_registered",
+    "ami_entity": "binary_sensor.ami_connected",
     "frigate_pre_minutes": 5,
     "media_retention_days": 90,
     "send_photos_external": True,
@@ -255,6 +261,14 @@ def clean_settings(data: dict[str, Any]) -> dict[str, Any]:
     if s["trunk_test"] not in TRUNK_TEST_MODES:
         errors["trunk_test"] = "Frecuencia no válida."
     s["trunk_alert_after_min"] = _int_in(s["trunk_alert_after_min"], 1, 60, "trunk_alert_after_min", errors)
+    s["trunk_test_hour"] = _int_in(s["trunk_test_hour"], 0, 23, "trunk_test_hour", errors)
+    s["trunk_test_number"] = normalize_phone(s["trunk_test_number"])
+    if s["trunk_test_number"] and not _PHONE_RE.match(s["trunk_test_number"]):
+        errors["trunk_test_number"] = "Número español de 9 cifras (con o sin +34)."
+    for key in ("trunk_entity", "ami_entity"):
+        s[key] = str(s[key] or "").strip()
+        if not (s[key].startswith("binary_sensor.") and _ENTITY_RE.match(s[key])):
+            errors[key] = "Tiene que ser una entidad binary_sensor.xxx."
     s["frigate_pre_minutes"] = _int_in(s["frigate_pre_minutes"], 0, 30, "frigate_pre_minutes", errors)
     s["media_retention_days"] = _int_in(s["media_retention_days"], 7, 365, "media_retention_days", errors)
     s["send_photos_external"] = bool(s["send_photos_external"])

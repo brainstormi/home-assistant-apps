@@ -94,11 +94,11 @@ class HomeAssistant:
                 return sorted(name for name in (domain.get("services") or {}) if name.startswith("mobile_app_"))
         return []
 
-    def status(self, states: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    def status(self, states: list[dict[str, Any]] | None = None, entities: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
         states = self.states() if states is None else states
         by_id = {s.get("entity_id"): s for s in states}
         out = {}
-        for key, eid in STATUS_ENTITIES.items():
+        for key, eid in {**STATUS_ENTITIES, **(entities or {})}.items():
             s = by_id.get(eid)
             out[key] = {
                 "entity_id": eid,
