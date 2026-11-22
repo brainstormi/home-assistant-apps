@@ -14,9 +14,9 @@ import aiohttp
 from websockets.asyncio.client import connect
 
 from . import __version__
-from .audiosocket import KIND_HANGUP, KIND_UUID, pack_frame, read_frame
+from .audiosocket import FRAME_BYTES, FRAME_MS, KIND_AUDIO, KIND_HANGUP, KIND_UUID, pack_frame, read_frame
 from .config import DEPRECATED_MODELS, PROFILE_INBOUND, Config, ConfigError, load
-from .dialplan import caller_number, dial_report, result_for
+from .dialplan import caller_number, dial_report, result_for, voicemail_report
 from .fallback import Fallback
 from .ha import HomeAssistant
 from .health import OpenAIHealth, describe_error, realtime_probe
@@ -92,7 +92,8 @@ class Bridge:
         """A command from Home Assistant (add-on stdin)."""
         action = data.get("action") if isinstance(data, dict) else None
         if action == "note":
-            await self.note(str(data.get("call_id") or ""), str(data.get("text") or ""))
+            await self.note(str(data.get("call_id") or ""), str(data.get("text") or ""),
+                            bool(data.get("resolve")))
             return
         if action == "hangup":
             await self.hangup(str(data.get("call_id") or ""))
@@ -128,8 +129,13 @@ class Bridge:
             # Ready before the phone is answered, in case OpenAI fails then.
             self.spawn(self.fallback.prepare_call(call))
 
-    async def note(self, call_id: str, text: str) -> bool:
-        """Tell the person on the phone something, without hanging up."""
+    async def note(self, call_id: str, text: str, resolve: bool = False) -> bool:
+        """Tell the person on the phone something, without hanging up.
+
+        ``resolve``: the notice no longer needs confirming (the alarm was
+        disarmed, someone else is dealing with it): the assistant stops, says
+        the note and winds the call up; the call ends as ``resolved``.
+        """
         text = text.strip()[:MAX_NOTE_CHARS]
         call_id = self._canonical(call_id)
         live = self.live.get(call_id)
@@ -140,11 +146,12 @@ class Bridge:
             log.warning("[%s] note not delivered: no conversation in progress", call_id[:8] or "-")
         else:
             try:
-                delivered = await live.handler.note(text)
+                delivered = await live.handler.note(text, resolve=resolve)
             except Exception as err:  # noqa: BLE001
                 log.warning("[%s] note failed: %r", call_id[:8], err)
         if call_id:
-            await self._fire({"call_id": call_id, "stage": "note", "delivered": delivered})
+            await self._fire({"call_id": call_id, "stage": "note", "delivered": delivered,
+                              "resolve": resolve})
         return delivered
 
     async def hangup(self, call_id: str = "") -> int:
@@ -167,10 +174,36 @@ class Bridge:
             call = self.registry.cancel(cid)
             if call is not None:
                 self.fallback.forget(call)
+                await self._stop_ringing(call)
                 await self._fire({**self._event(call, "ended", "cancelled"), "ended_by": "hangup"})
                 count += 1
         log.info("Hang-up requested (%s): %d call(s)", call_id[:8] if call_id else "all", count)
         return count
+
+    async def _stop_ringing(self, call: OutboundCall) -> None:
+        """Hang up in Asterisk a withdrawn call that is still ringing.
+
+        Asterisk does not know the call was withdrawn: its Dial would ring until
+        its own timeout. The ``bridge-kill`` context hangs up the channels of
+        ``Local/<number>_<call id>@bridge-outbound`` (see DOCS). A failure here
+        is only logged: the call is cancelled anyway.
+        """
+        app = self.cfg.asterisk_app
+        number = call.number.strip()
+        if not app:
+            log.info("[%s] asterisk_app not set: the phone keeps ringing until Asterisk gives up",
+                     call.short_id)
+            return
+        if not number or not all(ch.isdigit() or ch == "+" for ch in number):
+            log.warning("[%s] cannot stop the ringing in Asterisk: the call has no valid number",
+                        call.short_id)
+            return
+        command = f"channel originate Local/{number}_{call.call_id}@bridge-kill application Wait 1"
+        try:
+            await self.home.call_service("hassio", "addon_stdin", {"addon": app, "input": command})
+            log.info("[%s] asked Asterisk to stop the ringing", call.short_id)
+        except Exception as err:  # noqa: BLE001
+            log.warning("[%s] could not ask Asterisk to stop the ringing: %r", call.short_id, err)
 
     @staticmethod
     def _canonical(call_id: str) -> str:
@@ -216,6 +249,10 @@ class Bridge:
             report = dial_report(full_id)
             if report is not None:
                 await self._on_dial_report(writer, *report)
+                return
+            machine = voicemail_report(full_id)
+            if machine is not None:
+                await self._on_voicemail(writer, *machine)
                 return
             outbound = self.registry.take(full_id)
             if outbound is None and self.registry.retired(full_id):
@@ -335,6 +372,40 @@ class Bridge:
         self.fallback.forget(call)
         await self._fire({**self._event(call, "ended", result), "dialstatus": status})
 
+    async def _on_voicemail(self, writer: Any, cause: str, tail: str) -> None:
+        """Asterisk's AMD() detected an answering machine on an outbound call."""
+        call = self.registry.take_by_tail(tail)
+        if call is None:
+            log.debug("Answering machine for a call that is no longer pending")
+            await self._hang_up(writer)
+            return
+        log.info("[%s] answered by a machine (%s)", call.short_id, cause)
+        left = False
+        if call.voicemail_message:
+            if self.fallback.enabled:
+                try:
+                    await self._play(writer, await self.fallback.audio(call.voicemail_message))
+                    left = True
+                except Exception as err:  # noqa: BLE001
+                    log.warning("[%s] could not leave the message: %r", call.short_id, err)
+            else:
+                log.warning("[%s] voicemail_message needs fallback_tts: no message left", call.short_id)
+        await self._hang_up(writer)
+        self.fallback.forget(call)
+        await self._fire({**self._event(call, "ended", "voicemail"), "amdstatus": "MACHINE",
+                          "amdcause": cause, "voicemail_message_left": left})
+
+    async def _play(self, writer: Any, pcm: bytes, frame_seconds: float = FRAME_MS / 1000) -> None:
+        loop = asyncio.get_running_loop()
+        tick = loop.time()
+        for i in range(0, len(pcm), FRAME_BYTES):
+            frame = pcm[i:i + FRAME_BYTES]
+            writer.write(pack_frame(KIND_AUDIO, frame + bytes(FRAME_BYTES - len(frame))))
+            await writer.drain()
+            tick += frame_seconds
+            await asyncio.sleep(max(0.0, tick - loop.time()))
+        await asyncio.sleep(0.5)
+
     def _inbound_event(self, full_id: str, stage: str, number: str, auth: CallAuth) -> dict[str, Any]:
         return {
             "call_id": full_id,
@@ -397,7 +468,8 @@ class Bridge:
         except Exception as err:  # noqa: BLE001
             log.warning("[%s] local conversation failed: %r", call_id, err)
         return {"confirmed": local.confirmed, "confirmed_by": local.confirmed_by,
-                "pin_person": local.pin_person, "local": True}
+                "pin_person": local.pin_person, "local": True,
+                "resolved": local.resolved, "silence": local.silence_ended}
 
     # ------------------------------------------------------------- PIN mode
     async def pin_status(self) -> None:
@@ -453,6 +525,13 @@ class Bridge:
             result = "confirmed"
         else:
             result = "answered"
+        source = fallback if fallback is not None else {
+            "resolved": getattr(session, "resolved", False),
+            "silence": getattr(session, "silence_ended", False),
+        }
+        resolved = bool(source.get("resolved"))
+        if resolved and outbound is not None and result in ("answered", "confirmed"):
+            result = "resolved"
         if outbound:
             data = self._event(outbound, "ended", result)
         else:
@@ -462,6 +541,10 @@ class Bridge:
             data["confirmed_by"] = fallback.get("confirmed_by") or "dtmf"
         elif session and session.confirmed_by:
             data["confirmed_by"] = session.confirmed_by
+        if resolved:
+            data["resolved"] = True
+        if source.get("silence"):
+            data["ended_by"] = "silence"
         data["duration"] = round(duration)
         data["pin_verified"] = bool(session and session.pin_person is not None)
         if session and session.pin_person:

@@ -54,6 +54,15 @@ configuration:
   max_concurrent_calls:
     name: Llamadas simultáneas
     description: Máximo de llamadas a la vez.
+  silence_seconds:
+    name: Silencio sin respuesta (s)
+    description: "Si quien está al teléfono no habla ni pulsa una tecla durante estos segundos (después de que hable el asistente), se le vuelve a preguntar. Sirve también para buzones de voz. 0 = desactivado."
+  silence_reprompts:
+    name: Reintentos por silencio
+    description: "Cuántas veces se vuelve a preguntar antes de despedirse y colgar (el evento final lleva ended_by: silence)."
+  asterisk_app:
+    name: App de Asterisk
+    description: "El identificador del app de Asterisk (Ajustes > Apps > Asterisk: está en la URL), para dejar de hacer sonar una llamada saliente retirada con hangup. Vacío = no se cuelga en Asterisk (suena hasta que Asterisk desiste)."
   conversation_agent:
     name: Agente de conversación de HA
     description: Agente que ejecuta las órdenes. Por defecto el Assist integrado (sin LLM), que solo toca entidades expuestas.

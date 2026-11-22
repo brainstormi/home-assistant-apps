@@ -68,6 +68,8 @@ class OutboundCall:
     confirm_text: str = ""
     assistant_name: str = ""  # empty: the add-on's assistant_name
     engine: str = "realtime"
+    # Read (with the fallback voice) when Asterisk detects an answering machine.
+    voicemail_message: str = ""
     created: float = field(default_factory=time.monotonic)
 
     @property
@@ -118,6 +120,7 @@ def parse_command(data: Any) -> OutboundCall:
         confirm_key=confirm_key,
         confirm_text=str(data.get("confirm_text") or "").strip()[:MAX_TEXT_CHARS],
         assistant_name=str(data.get("assistant_name") or "").strip()[:MAX_NAME_CHARS],
+        voicemail_message=str(data.get("voicemail_message") or "").strip()[:MAX_MESSAGE_CHARS],
     )
 
 

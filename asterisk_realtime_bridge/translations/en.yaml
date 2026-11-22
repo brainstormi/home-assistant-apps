@@ -54,6 +54,15 @@ configuration:
   max_concurrent_calls:
     name: Concurrent calls
     description: Maximum simultaneous calls.
+  silence_seconds:
+    name: Silence without an answer (s)
+    description: "If the person on the phone neither speaks nor presses a key for this long (after the assistant has spoken), they are asked again. It also covers answering machines. 0 = off."
+  silence_reprompts:
+    name: Reprompts on silence
+    description: "How many times they are asked again before the assistant says goodbye and hangs up (the ended event carries ended_by: silence)."
+  asterisk_app:
+    name: Asterisk app
+    description: "The Asterisk app's id (Settings > Apps > Asterisk: it is in the URL), to stop the ringing of an outbound call withdrawn with hangup. Empty = not hung up in Asterisk (it rings until Asterisk gives up)."
   conversation_agent:
     name: Home Assistant conversation agent
     description: Agent that executes the commands. Defaults to the built-in Assist agent (no LLM), which only touches exposed entities.

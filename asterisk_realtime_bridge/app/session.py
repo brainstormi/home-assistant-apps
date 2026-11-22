@@ -312,6 +312,10 @@ class CallSession:
         self._response_active = False
         self._hangup_pending = False
         self._note_pending = False
+        self._response_id = ""
+        self._dropped: set[str] = set()  # responses cancelled by a resolving note
+        self._last_activity = 0.0  # loop time of the last sound or key, either side
+        self._reprompts = 0
         self._seen_calls: set[str] = set()
         self._tool_tasks: set[asyncio.Task] = set()
 
@@ -329,6 +333,8 @@ class CallSession:
         # Why the call ended: "asterisk", "openai", "ready" (OpenAI did not
         # confirm the session), "finished" (hang_up), "pacer" or "timeout".
         self.end_reason: str | None = None
+        self.resolved = False  # Home Assistant closed the notice with a note (resolve)
+        self.silence_ended = False  # hung up because nobody answered
         self.openai_error = ""  # last error code sent by OpenAI
 
     # ------------------------------------------------------------------ run
@@ -348,6 +354,7 @@ class CallSession:
             "pacer": asyncio.create_task(self._pacer()),
             "ready": asyncio.create_task(self._watch_ready()),
             "finished": asyncio.create_task(self._finished.wait()),
+            "silence": asyncio.create_task(self._silence_watch()),
         }
         try:
             done, _ = await asyncio.wait(
@@ -414,6 +421,7 @@ class CallSession:
                     audio = base64.b64encode(slin_to_ulaw(payload)).decode("ascii")
                     await self._send({"type": "input_audio_buffer.append", "audio": audio})
             elif kind == KIND_DTMF:
+                self._caller_active()
                 await self._on_dtmf(payload.decode("ascii", errors="ignore")[:1])
             elif kind == KIND_HANGUP:
                 log.info("[%s] caller hung up", self.call_id)
@@ -440,10 +448,16 @@ class CallSession:
                 self.connected = True
                 await self._greet()
         elif kind == "input_audio_buffer.speech_started":
+            self._caller_active()
             await self._interrupt()
         elif kind == "response.created":
             self._response_active = True
+            self._response_id = str((event.get("response") or {}).get("id") or "")
+            self._touch()
         elif kind == "response.output_audio.delta":
+            if event.get("response_id") and event["response_id"] in self._dropped:
+                return  # audio of a response cut short by a resolving note
+            self._touch()
             self._deliver_audio(event.get("item_id", ""), base64.b64decode(event.get("delta", "")))
         elif kind == "response.output_audio.done":
             self._flush_carry()
@@ -552,6 +566,7 @@ class CallSession:
                 self.writer.write(pack_frame(KIND_AUDIO, frame))
                 await self.writer.drain()
                 self._played_ms[item_id] += FRAME_MS
+                self._last_activity = loop.time()
                 if not self._out:
                     # Ran dry: buffer again before the next audio plays.
                     self._buffering = True
@@ -628,6 +643,8 @@ class CallSession:
         if name == "hang_up":
             self._hangup_pending = True
             return {"ok": True}
+        if name == "confirm_notice" and self.resolved:
+            return {"ok": True, "message": "No confirmation is needed: the notice is resolved."}
         if name == "confirm_notice" and self.outbound is not None and self.outbound.confirm != "dtmf":
             self._confirm("implicit" if self.outbound.confirm == "implicit" else "voice")
             return {"ok": True, "message": "Confirmation recorded."}
@@ -720,7 +737,7 @@ class CallSession:
     # ------------------------------------------------------- confirmation
     def _confirm(self, how: str) -> bool:
         """Record the confirmation of the notice; False if it was already confirmed."""
-        if self.confirmed:
+        if self.confirmed or self.resolved:
             return False
         self.confirmed = True
         self.confirmed_by = how
@@ -759,6 +776,7 @@ class CallSession:
             call is not None
             and call.confirm in ("dtmf", "voice_or_dtmf")
             and not self.confirmed
+            and not self.resolved
             and digit == call.confirm_key
         ):
             if not pin_entry or (not digit.isdigit() and not self._dtmf):
@@ -789,10 +807,17 @@ class CallSession:
         elif digit == "*":
             self._dtmf = ""
 
-    async def note(self, text: str) -> bool:
-        """A message from Home Assistant for the person on the phone (no hang-up)."""
+    async def note(self, text: str, resolve: bool = False) -> bool:
+        """A message from Home Assistant for the person on the phone (no hang-up).
+
+        With ``resolve`` the notice is closed: the assistant stops talking at
+        once, says the note, asks for no confirmation and offers to answer a
+        question before saying goodbye.
+        """
         if not self.connected:
             return False
+        if resolve:
+            return await self._resolve(text)
         log.info("[%s] note from Home Assistant", self.call_id)
         await self._system_note(
             "Home Assistant has just sent a message for the person on the phone. "
@@ -802,6 +827,77 @@ class CallSession:
         if self._response_active:
             self._note_pending = True
         return True
+
+    async def _resolve(self, text: str) -> bool:
+        log.info("[%s] note from Home Assistant: the notice is resolved", self.call_id)
+        self.resolved = True
+        self._reprompts = 0
+        self._cancel_key_timer()
+        if self._response_active:
+            if self._response_id:
+                self._dropped.add(self._response_id)
+            await self._send({"type": "response.cancel"})
+        await self._interrupt()
+        self._touch()
+        await self._system_note(
+            "Stop what you were saying. Home Assistant has resolved the notice: it no "
+            "longer needs any confirmation, so do not ask for one again. Tell the person "
+            "now, briefly and in your own words: "
+            f"{json.dumps(text, ensure_ascii=False)}. Then offer, in one short sentence, "
+            "to answer any question; if they have none, say goodbye and call hang_up."
+        )
+        if self._response_active:
+            self._note_pending = True  # said as soon as the cancelled response ends
+        return True
+
+    # ------------------------------------------------------------ silence
+    def _touch(self) -> None:
+        self._last_activity = asyncio.get_running_loop().time()
+
+    def _caller_active(self) -> None:
+        """The caller spoke or pressed a key: they are there."""
+        self._touch()
+        self._reprompts = 0
+
+    def _busy(self) -> bool:
+        return bool(
+            self._response_active or self._out or self._carry
+            or any(not t.done() for t in self._tool_tasks)
+        )
+
+    async def _silence_watch(self) -> None:
+        """Nobody answers (silence or an answering machine): ask again, then hang up."""
+        limit = self.cfg.silence_seconds
+        if limit <= 0:
+            await asyncio.Event().wait()
+        await self._ready.wait()
+        self._touch()
+        loop = asyncio.get_running_loop()
+        while True:
+            await asyncio.sleep(min(0.5, limit / 4))
+            if self._busy() or self._hangup_pending:
+                self._touch()
+                continue
+            if loop.time() - self._last_activity < limit:
+                continue
+            self._touch()
+            if self.resolved or self._reprompts >= self.cfg.silence_reprompts:
+                log.info("[%s] no answer for %ss: hanging up", self.call_id, limit)
+                self.silence_ended = True
+                self._hangup_pending = True
+                await self._system_note("Nobody is answering. Say a very brief goodbye now.")
+                await asyncio.sleep(15)  # in case the goodbye never comes
+                self._finished.set()
+                await asyncio.Event().wait()
+            self._reprompts += 1
+            log.info("[%s] silence (%ss): asking again (%d/%d)",
+                     self.call_id, limit, self._reprompts, self.cfg.silence_reprompts)
+            pending = self.outbound is not None and not self.confirmed and self.outbound.confirm != "implicit"
+            await self._system_note(
+                f"The person has not said anything for {limit} seconds. Ask again, in one "
+                "short sentence, whether they can hear you"
+                + (" and whether they received the notice." if pending else ".")
+            )
 
     async def _system_note(self, text: str) -> None:
         await self._send(

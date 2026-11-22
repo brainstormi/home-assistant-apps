@@ -81,6 +81,17 @@ fields:
     name: How the assistant introduces itself
     selector:
       text: {}
+  detect_voicemail:
+    name: Detect answering machines
+    description: Uses the bridge-notice-amd context (adds 2-4 s; may mistake a long greeting for a machine).
+    default: false
+    selector:
+      boolean: {}
+  voicemail_message:
+    name: Message for an answering machine
+    description: Optional short text left on the machine (needs the fallback voice).
+    selector:
+      text: {}
   engine:
     name: Engine
     default: realtime
@@ -123,13 +134,14 @@ sequence:
               confirm_text: "{{ confirm_text | default('') }}"
               assistant_name: "{{ assistant_name | default('') }}"
               engine: "{{ engine | default('realtime') }}"
+              voicemail_message: "{{ voicemail_message | default('') }}"
         - alias: Ask Asterisk to dial
           action: hassio.addon_stdin
           data:
             addon: <asterisk-slug>
             input: >-
               channel originate Local/{{ number }}_{{ call_id }}@bridge-outbound
-              extension {{ call_id }}@bridge-notice
+              extension {{ call_id }}@{{ 'bridge-notice-amd' if detect_voicemail | default(false) else 'bridge-notice' }}
         - alias: Wait for the end of the call
           wait_for_trigger:
             - trigger: event
