@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+
+- Taking charge stops the calls but no longer ends the incident: it stays open, recording cameras and sensors, until the alarm is disarmed plus "Seguir registrando después del desarme" (default 10 minutes), or until "Cerrar si nadie desarma tras" (default 120 minutes). Entries after the disarm are marked "después del desarme"; the closing is a timeline entry.
+- Home page: the incident banner stays while the incident is open, says whether it waits for the disarm or until when it keeps recording, and drills keep "Simular desarme" after someone has taken charge.
+- Test calls and drills cannot start while a real alarm is open; a new alarm closes the open incident.
+- The Assist sensor says when an alarm is still waiting for the disarm.
+
 ## 0.6.0
 
 - Cameras and sensors keep going into the incident for a set time after someone takes charge, the alarm is disarmed or the chain ends (Ajustes → Registro del incidente, default 10 minutes, 0 to turn it off). Those entries are marked "después del cierre"; the incident page says until when it keeps recording.

@@ -51,7 +51,8 @@ TEST_PREFIX = "Esto es una prueba de Alarm Contact Center. "
 DRILL_PREFIX = "Esto es un simulacro de alarma. "
 SNAPSHOT_WAITS_S = (8, 20, 40)  # when to try copying a snapshot after the alert
 CHAIN_KINDS = ("alarm", "drill")
-AFTER_CLOSE = "después del cierre"  # incidents that run the full chain
+AFTER_CLOSE = "después del desarme"
+CLOSE_POLL_S = 3600  # the closer re-checks at least this often  # incidents that run the full chain
 AFTER_TEXT = {
     "confirmed": "Confirmó el aviso", "answered": "Contestó sin confirmar", "resolved": "Se le informó y colgó",
     "cancelled": "Llamada retirada", "voicemail": "Buzón de voz", "no_answer": "No contestó",
@@ -147,6 +148,13 @@ def describe_change(entity_id: str, state: str, device_class: str) -> str:
     return state
 
 
+def fmt_elapsed(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 120:
+        return f"{seconds} s"
+    return f"{seconds // 60} min"
+
+
 class IncidentLog:
     """Last incidents, kept in /data so the panel can show them after a restart."""
 
@@ -201,7 +209,13 @@ class Incident:
         self.persons: list[dict[str, Any]] = []  # Frigate person alerts in this incident
         self.media_jobs: set[str] = set()
         self.final: dict[str, Any] | None = None  # set once the chain has ended
-        self.record_until = 0.0  # cameras and sensors are still recorded until then, after the end
+        # Lifecycle: the chain (calls) ends when someone takes charge, but the incident stays
+        # open, recording cameras and sensors, until the alarm is disarmed plus the minutes
+        # set in the settings, or until the maximum time open if nobody disarms it.
+        self.record_until = 0.0
+        self.disarmed_at = 0.0
+        self.closed = False
+        self.wake = asyncio.Event()  # the close time changed
         self.on_change: Any = None  # set by the engine: called after every change
 
     def add(self, kind: str, text: str, detail: str = "", t: str | None = None, media: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -216,6 +230,15 @@ class Incident:
     def changed(self) -> None:
         if self.on_change:
             self.on_change(self)
+
+    def phase(self) -> str:
+        """calling: the chain runs; open: handled or not, waiting for the disarm;
+        closing: disarmed, still recording; closed."""
+        if self.task is not None and not self.task.done():
+            return "calling"
+        if self.closed or self.kind not in CHAIN_KINDS:
+            return "closed"
+        return "closing" if self.disarmed_at else "open"
 
     def last_person(self) -> dict[str, Any] | None:
         return max(self.persons, key=lambda p: p["start"]) if self.persons else None
@@ -235,7 +258,9 @@ class Incident:
             "persons": copy.deepcopy(self.persons),
             "last_person": copy.deepcopy(self.last_person()),
             "recording_until": dt.datetime.fromtimestamp(self.record_until).astimezone().isoformat(timespec="seconds")
-            if self.record_until > time.time() else None,
+            if self.record_until > time.time() and not self.closed else None,
+            "disarmed": bool(self.disarmed_at),
+            "phase": self.phase(),
         }
 
 
@@ -266,12 +291,13 @@ class Engine:
     def _listening(self, inc: Incident | None) -> bool:
         """Cameras and sensors go into the incident while it runs and for the minutes
         after it ends set in the settings ("seguir registrando")."""
-        return bool(inc and inc.kind in CHAIN_KINDS and (self._active(inc) or time.time() < inc.record_until))
+        return bool(inc and inc.kind in CHAIN_KINDS and not inc.closed
+                    and (self._active(inc) or time.time() < inc.record_until))
 
     @staticmethod
     def _late(inc: Incident) -> bool:
-        """After someone took charge, the alarm was disarmed or the chain ended."""
-        return inc.stop.is_set() or inc.task is None or inc.task.done()
+        """After the alarm was disarmed."""
+        return bool(inc.disarmed_at)
 
     def _save_late(self, inc: Incident) -> None:
         if inc.task is not None and inc.task.done():
@@ -373,8 +399,11 @@ class Engine:
             if self.current and self.current.kind == "alarm" and self._active(self.current):
                 return
             await self._start_alarm(attributes, restarted)
-        elif state in DISARMED_STATES and self.current and self._active(self.current) and self.current.kind == "alarm":
-            await self._halt(self.current, "disarmed", "Alarma desarmada")
+        elif state in DISARMED_STATES and self.current and self.current.kind == "alarm" and not self.current.closed:
+            if self._active(self.current) and not self.current.stop.is_set():
+                await self._halt(self.current, "disarmed", "Alarma desarmada")
+            else:
+                await self._disarmed_later(self.current, "Alarma desarmada")
 
     async def on_bridge_event(self, data: dict[str, Any]) -> None:
         """asterisk_realtime_bridge_call events: learn the call_id of our call."""
@@ -411,6 +440,8 @@ class Engine:
 
     async def start_test(self, contact_id: str) -> dict[str, Any]:
         """Call one contact with a test message. Never while a real alarm is running."""
+        if self.current and self.current.kind == "alarm" and self.current.phase() != "closed":
+            raise RuntimeError("Hay una alarma abierta: no se puede hacer una prueba hasta que se desarme y se cierre.")
         if self.current and self._active(self.current):
             if self.current.kind == "alarm":
                 raise RuntimeError("Hay una alarma en curso: no se puede hacer una prueba.")
@@ -431,6 +462,8 @@ class Engine:
         Only the chosen contacts are notified and called; messages say it is a drill.
         Does not take the phone line from other calls (no priority step).
         """
+        if self.current and self.current.kind == "alarm" and self.current.phase() != "closed":
+            raise RuntimeError("Hay una alarma abierta: no se puede hacer un simulacro hasta que se desarme y se cierre.")
         if self.current and self._active(self.current):
             if self.current.kind == "alarm":
                 raise RuntimeError("Hay una alarma en curso: no se puede hacer un simulacro.")
@@ -455,11 +488,14 @@ class Engine:
     async def simulate_disarm(self) -> None:
         """Drill only: behave as if Alarmo had been disarmed."""
         inc = self.current
-        if not inc or not self._active(inc) or inc.kind != "drill":
+        if not inc or inc.kind != "drill" or inc.closed:
             raise RuntimeError("No hay ningún simulacro en curso.")
-        if inc.stop.is_set():
-            raise RuntimeError("El simulacro ya ha terminado: solo falta que acabe la llamada en curso.")
-        await self._halt(inc, "disarmed", "Simulacro: alarma desarmada")
+        if inc.disarmed_at:
+            raise RuntimeError("El simulacro ya está desarmado.")
+        if self._active(inc) and not inc.stop.is_set():
+            await self._halt(inc, "disarmed", "Simulacro: alarma desarmada")
+        else:
+            await self._disarmed_later(inc, "Simulacro: alarma desarmada")
 
     async def cancel(self) -> None:
         """Stop whatever is running (panel button). Does not touch Alarmo."""
@@ -475,6 +511,10 @@ class Engine:
         return inc.task is not None and not inc.task.done()
 
     def _launch(self, inc: Incident) -> None:
+        previous = self.current
+        if previous is not None and previous is not inc and not previous.closed and previous.kind in CHAIN_KINDS \
+                and not self._active(previous):
+            self._close(previous, "Cerrado: ha empezado otro incidente")
         self.current = inc
         inc.on_change = self._changed
         if inc.kind in CHAIN_KINDS:
@@ -500,7 +540,7 @@ class Engine:
                 log.exception("Incident listener failed")
 
     async def _start_alarm(self, attributes: dict[str, Any], restarted: bool) -> None:
-        # A test or a drill in progress gives way to the real alarm.
+        # A test or a drill in progress gives way to the real alarm (an open one is closed by _launch).
         if self.current and self._active(self.current) and self.current.kind in ("test", "drill"):
             await self._halt(self.current, "cancelled", "Cancelado: ha saltado la alarma de verdad")
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -552,7 +592,9 @@ class Engine:
                 await self._notify_household(inc, "Error en los avisos", "La cadena de llamadas ha fallado. Revisa la alarma.")
         finally:
             if inc.kind in CHAIN_KINDS:
-                inc.record_until = time.time() + self.store.settings()["post_minutes"] * 60
+                inc.record_until = self._close_at(inc)
+                if self.time_scale > 0:  # tests close incidents themselves
+                    asyncio.get_running_loop().create_task(self._closer(inc))
             final = inc.to_dict()
             final["active"] = False  # the task is still running at this point
             self.incidents.save(final)
@@ -750,6 +792,7 @@ class Engine:
         self._finish(inc, status)
         inc.add(status, text)
         if status == "disarmed":
+            inc.disarmed_at = time.time()
             await self._tell_current_call(inc, "Te informo de que la alarma se acaba de desarmar.")
             await self._notify_household(inc, "Alarma desarmada",
                                          f"Desarmada a los {int(time.time() - inc.started)} s ({inc.sensor}).", ack_button=False)
@@ -759,6 +802,57 @@ class Engine:
         inc.stop_reason = status
         inc.stop.set()
         self.incidents.save(inc.to_dict())
+
+    # ---------------------------------------------------------- closing
+    def _close_at(self, inc: Incident) -> float:
+        settings = self.store.settings()
+        if inc.disarmed_at:
+            return inc.disarmed_at + settings["post_minutes"] * 60
+        return max(inc.started + settings["max_open_minutes"] * 60, time.time())
+
+    async def _disarmed_later(self, inc: Incident, text: str) -> None:
+        """Disarmed after the chain ended (someone had taken charge): the incident now
+        closes after the minutes set in the settings."""
+        if inc.disarmed_at or inc.closed:
+            return
+        inc.disarmed_at = time.time()
+        if inc.status not in ("disarmed",):
+            inc.status = "disarmed" if inc.status in ("waiting", "calling") else inc.status
+        inc.add("disarmed", text)
+        inc.record_until = self._close_at(inc)
+        inc.wake.set()
+        self._save_late(inc)
+        if inc.kind == "alarm" or inc.kind == "drill":
+            with contextlib.suppress(Exception):
+                await self._notify_household(inc, "Alarma desarmada" if inc.kind == "alarm" else "Simulacro desarmado",
+                                             f"Desarmada a los {fmt_elapsed(time.time() - inc.started)} ({inc.sensor}).",
+                                             ack_button=False)
+        if inc.record_until <= time.time():
+            self._close(inc)
+
+    async def _closer(self, inc: Incident) -> None:
+        """Close the incident when its time comes (the time moves when it is disarmed)."""
+        while not inc.closed:
+            remaining = inc.record_until - time.time()
+            if remaining <= 0:
+                break
+            inc.wake.clear()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(inc.wake.wait(), timeout=min(remaining, CLOSE_POLL_S))
+        self._close(inc)
+
+    def _close(self, inc: Incident, text: str = "") -> None:
+        if inc.closed:
+            return
+        if not text:
+            text = "Incidente cerrado" if inc.disarmed_at else "Incidente cerrado sin desarmar (tiempo máximo abierto)"
+        inc.add("closed", text)
+        inc.closed = True
+        inc.record_until = 0.0
+        inc.wake.set()
+        inc.final = inc.to_dict()
+        self.incidents.save(inc.final)
+        self._changed(inc)
 
     async def _tell_current_call(self, inc: Incident, text: str) -> None:
         """Someone is on the phone: tell them. Still ringing: withdraw the call."""

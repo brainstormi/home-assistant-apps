@@ -75,6 +75,10 @@ def summary(inc: dict[str, Any] | None, now: dt.datetime | None = None) -> str:
     status = STATUS_TEXT.get(inc.get("status", ""), inc.get("status", ""))
     if inc.get("status") == "acknowledged" and inc.get("acknowledged_by"):
         status = f"atendida por {inc['acknowledged_by']}"
+    if inc.get("phase") == "open":
+        status += ", pendiente de desarmar"
+    elif inc.get("phase") == "closing" and inc.get("status") != "disarmed":
+        status += ", ya desarmada"
     parts.append(status)
     person = inc.get("last_person")
     if person:
@@ -92,6 +96,7 @@ def attributes(inc: dict[str, Any] | None) -> dict[str, Any]:
         "started": inc.get("started"),
         "status": inc.get("status"),
         "active": inc.get("active"),
+        "phase": inc.get("phase"),
         "sensor": inc.get("sensor"),
         "acknowledged_by": inc.get("acknowledged_by") or None,
         "people_seen": len(persons),
