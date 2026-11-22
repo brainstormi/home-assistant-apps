@@ -8,7 +8,8 @@ alias: Outbound call with a notice
 description: >-
   Calls ONE number with the phone assistant, reads the notice and answers
   questions according to the profile. Retries up to "attempts" times and returns
-  result (no_answer, answered, confirmed, cancelled, failed, timeout), success,
+  result (no_answer, answered, confirmed, resolved, voicemail, cancelled, failed,
+  timeout), success,
   attempts and detail (the bridge's last event: confirmed_by, dialstatus...).
 icon: mdi:phone-outgoing
 mode: queued
@@ -108,6 +109,8 @@ sequence:
       p_timeout: "{{ answer_timeout | default(60) | int(60) }}"
       p_confirm_required: "{{ require_confirmation | default(true) | bool }}"
       p_ok: "{{ ['confirmed'] if p_confirm_required else ['answered', 'confirmed'] }}"
+      # Not retried: the notice was resolved by a note, or the call was withdrawn.
+      p_stop: "{{ p_ok + ['resolved', 'cancelled'] }}"
   - repeat:
       sequence:
         - variables:
@@ -157,12 +160,12 @@ sequence:
         - alias: Wait before the next attempt
           if:
             - condition: template
-              value_template: "{{ repeat.index < p_attempts and result not in p_ok }}"
+              value_template: "{{ repeat.index < p_attempts and result not in p_stop }}"
           then:
             - delay: "{{ p_wait }}"
       until:
         - condition: template
-          value_template: "{{ repeat.index >= p_attempts or result in p_ok }}"
+          value_template: "{{ repeat.index >= p_attempts or result in p_stop }}"
   - variables:
       response:
         result: "{{ result }}"
