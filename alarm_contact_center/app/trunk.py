@@ -116,6 +116,14 @@ class TrunkMonitor:
         tmp.write_text(json.dumps(self.state, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(tmp, self.path)
 
+    def line_down(self, min_seconds: float = 30) -> bool:
+        """The line has been unregistered (or Asterisk unreachable) for a while: the
+        chain alerts by notifications without trying to call."""
+        settings = self.store.settings()
+        now = time.time()
+        return any(eid in (settings["trunk_entity"], settings["ami_entity"]) and now - d["since_ts"] >= min_seconds * self.time_scale
+                   for eid, d in self._down.items())
+
     def status(self) -> dict[str, Any]:
         settings = self.store.settings()
         nxt = next_run(dt.datetime.now().astimezone(), settings["trunk_test"], settings["trunk_test_hour"])
@@ -214,6 +222,11 @@ class TrunkMonitor:
             return
         if state == "on":
             down = self._down.pop(entity_id, None)
+            if down and not self._down:
+                recovered = getattr(self.engine, "on_line_recovered", None)
+                if recovered is not None:
+                    with contextlib.suppress(Exception):
+                        await recovered()
             if down:
                 self._record_up(entity_id, time.time())
                 if down["task"] and not down["task"].done():

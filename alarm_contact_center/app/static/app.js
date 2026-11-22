@@ -259,8 +259,8 @@ function showHome() {
 }
 
 const STATUS_TEXT = {
-  waiting: "Esperando antes de llamar", calling: "Llamando", acknowledged: "Atendida",
-  disarmed: "Desarmada", no_answer: "Nadie ha confirmado", trunk_down: "Línea telefónica caída",
+  waiting: "Esperando antes de llamar", calling: "Llamando", acknowledged: "Gestionada",
+  disarmed: "Desarmada", no_answer: "Nadie ha aceptado gestionarla", trunk_down: "Sin línea: avisos por notificaciones",
   cancelled: "Cancelada", failed: "Error", ok: "Recuperada",
 };
 
@@ -322,12 +322,13 @@ function toggleDrillBox() {
   const sensor = el("select", { id: "drill-sensor" },
     el("option", { value: "" }, "Sensor de prueba (genérico)"),
     (STATE.sensors || []).map((x) => el("option", { value: x.entity_id }, x.name)));
+  const lineDown = el("input", { type: "checkbox", id: "drill-line-down" });
   const go = el("button", { class: "btn primary", type: "button", onclick: async () => {
     const ids = checks.filter((c) => c.checked).map((c) => c.value);
     if (!ids.length) { toast("Elige al menos un contacto.", true); return; }
     go.disabled = true;
     try {
-      await api("POST", "api/drill", { contact_ids: ids, sensor: sensor.value });
+      await api("POST", "api/drill", { contact_ids: ids, sensor: sensor.value, line_down: lineDown.checked });
       toast("Simulacro en marcha.");
       box.hidden = true; btn.setAttribute("aria-expanded", "false");
       refreshCurrent();
@@ -337,9 +338,11 @@ function toggleDrillBox() {
     el("fieldset", { class: "drill-people" }, el("legend", {}, "Quién participa"),
       active.map((c, i) => el("label", { class: "check" }, checks[i], `${c.name}${c.phone ? "" : " (sin teléfono: solo notificación)"}`))),
     el("div", { class: "field", style: "flex:1 1 260px" }, el("label", { for: "drill-sensor" }, "Sensor que «salta»"), sensor),
+    el("label", { class: "check", style: "flex:1 1 100%" }, lineDown,
+      "Simular que no hay línea telefónica: no se llama a nadie; los contactos con gestión reciben la ráfaga de notificaciones y los demás, Telegram."),
     go,
     el("span", { class: "small muted", style: "flex:1 1 100%" },
-      "Hace todo como en una alarma real (notificación con «Lo atiendo», espera, llamadas en cadena), pero sin tocar Alarmo: sin sirena. " +
+      "Hace todo como en una alarma real (notificación con «Yo me encargo», espera, llamadas en cadena), pero sin tocar Alarmo: sin sirena. " +
       "Solo avisa a quien marques, y todo dice que es un simulacro. Durante la espera puedes pulsar «Simular desarme».")));
 }
 
@@ -531,11 +534,11 @@ function showContact(id, draft = null, errors = {}) {
       el("div", { class: "grid" },
         field("phone", "Teléfono", phone, "9 cifras, con o sin +34.", errors.phone),
         field("email", "Correo electrónico", withButtons(email, testButton("email", email)),
-          "Le llega un correo cuando alguien atiende la alarma (o nadie lo hace) y el informe final con las fotos.", errors.email),
+          "Le llega un correo cuando alguien acepta gestionar la alarma (o nadie lo hace) y el informe final con las fotos.", errors.email),
         field("telegram", "Chat de Telegram", withButtons(telegram, chatFinder(telegram), testButton("telegram", telegram)),
           "Sigue la alarma en directo: un mensaje que se actualiza solo y las fotos según llegan. La persona tiene que escribir antes al bot; luego pulsa «Buscar».",
           errors.telegram_chat_id),
-        isPerson ? field("notify", "Notificación de la app HA", notify, "Con botón «Lo atiendo» (no desarma la alarma).", errors.notify_service) : null)),
+        isPerson ? field("notify", "Notificación de la app HA", notify, "Con botón «Yo me encargo»: deja de avisarse al resto (no desarma la alarma). Sin línea telefónica, a los contactos con gestión les llega una ráfaga de notificaciones.", errors.notify_service) : null)),
 
     el("section", { class: "card", "aria-labelledby": "llamada-h" },
       el("h2", { id: "llamada-h", style: "font-size:17px" }, "La llamada"),
@@ -861,7 +864,7 @@ async function importConfig(ev) {
 const KIND_LABEL = { alarm: "Alarma", drill: "Simulacro", test: "Prueba", trunk: "Línea" };
 const KIND_COLOR = {
   triggered: "bad", trunk_down: "bad", error: "bad", confirmed: "ok", acknowledged: "ok", disarmed: "ok",
-  trunk_ok: "ok", person: "bad", sensor: "warn", closed: "", call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
+  trunk_ok: "ok", burst: "accent", telegram: "accent", retry: "warn", skip: "", person: "bad", sensor: "warn", closed: "", call: "accent", wait: "", profile: "warn", voicemail: "warn", resolved: "ok", cancelled: "", round: "warn", no_answer: "", answered: "warn", failed: "warn", timeout: "warn", limit: "warn",
 };
 
 function fmtTime(iso) {
@@ -890,7 +893,7 @@ async function showIncidents(selectedId = null) {
   const detail = selected ? el("section", { class: "card", style: "flex:999 1 560px;min-width:0", "aria-labelledby": "inc-det-h" },
     el("h2", { id: "inc-det-h" }, `${fmtTime(selected.started)} · ${selected.sensor}`),
     el("span", { class: "muted" }, `${KIND_LABEL[selected.kind] || selected.kind} · ${STATUS_TEXT[selected.status] || selected.status}` +
-      (selected.acknowledged_by ? ` · atendida por ${selected.acknowledged_by} (${selected.ack_via})` : "") + (selected.active ? " · en curso" : "") +
+      (selected.acknowledged_by ? ` · gestionada por ${selected.acknowledged_by} (${selected.ack_via})` : "") + (selected.active ? " · en curso" : "") +
       (selected.phase === "open" ? " · abierta hasta que se desarme" : "") +
       (selected.phase === "closing" ? ` · desarmada, se sigue registrando hasta las ${fmtTime(selected.recording_until).split(", ").pop()}` : "")),
     selected.kind !== "test" && selected.phase === "closed" ? resendBox(selected) : null,

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.0
+
+Without a phone line.
+
+- A call failure (`CHANUNAVAIL`/`CONGESTION`) is retried twice, 5 s apart, before counting as the line being down; an unregistered line (over 30 s) skips the calls straight away.
+- Without a line, the chain alerts instead of calling: management contacts get growing bursts of HA app notifications (1+10, 2+20, 3+30; critical every 2 s, normal every 1 s, each with its own tag, removed afterwards) following their attempts; other contacts with Telegram get a message with the button.
+- If the line comes back while the alarm is open and nobody has taken charge, the calls resume from the contact that was next.
+- "Yo me encargo" replaces "Lo atiendo", with a text explaining that it stops contacting everyone else; the timeline and messages say "X ha aceptado gestionar la alarma". It works after the chain has ended too, while the incident is open.
+- Telegram: the live message has a "Yo me encargo" button, and writing it to the bot works too; late presses are told who took charge. The chat finder uses the chats seen by the bot.
+- Telegram and email say clearly when nobody could be called because the line is down, and when it is back.
+- Drills can simulate the line being down.
+
 ## 0.10.0
 
 - Dashboard card "Alarm Contact Center" (`custom:alarm-contact-center-card`): state, summary, timeline with coloured dots, people seen with photo and video. Installed and registered as a resource by the App (it now maps the Home Assistant configuration folder, only to write `www/alarm-contact-center/`). Visual editor in the dashboard.

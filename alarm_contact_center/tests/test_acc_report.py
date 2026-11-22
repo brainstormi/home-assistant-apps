@@ -21,10 +21,10 @@ class SummaryTests(unittest.TestCase):
         inc = {"started": NOW.replace(hour=14, minute=33).isoformat(), "sensor": "Puerta del garaje",
                "status": "acknowledged", "acknowledged_by": "Luis",
                "last_person": {"camera": "Portal", "start": NOW.replace(hour=14, minute=31).timestamp()}}
-        self.assertEqual(summary(inc, NOW), "Alarma hoy a las 14:33, por Puerta del garaje, atendida por Luis, "
+        self.assertEqual(summary(inc, NOW), "Alarma hoy a las 14:33, por Puerta del garaje, gestionada por Luis, "
                                             "última persona vista en Portal a las 14:31.")
         inc = {"started": (NOW - dt.timedelta(days=1)).isoformat(), "sensor": "", "status": "no_answer"}
-        self.assertEqual(summary(inc, NOW), "Alarma ayer a las 15:00, nadie la atendió.")
+        self.assertEqual(summary(inc, NOW), "Alarma ayer a las 15:00, nadie aceptó gestionarla.")
         self.assertLessEqual(len(summary({**inc, "sensor": "x" * 400}, NOW)), 255)
 
 
@@ -60,7 +60,7 @@ class ReporterTests(unittest.IsolatedAsyncioTestCase):
             await engine.current.task
             await reporter.send()
             by_topic = {t: p for t, p, _ in sent}
-            self.assertIn("nadie la atendió", by_topic[STATE_TOPIC])
+            self.assertIn("nadie aceptó gestionarla", by_topic[STATE_TOPIC])
             attrs = json.loads(by_topic[ATTR_TOPIC])
             self.assertFalse(attrs["active"])
             self.assertTrue(all(r for _, _, r in sent))

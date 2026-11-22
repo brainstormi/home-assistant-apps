@@ -6,7 +6,7 @@ whole chain can be tested without Home Assistant, Asterisk or a phone.
 
 Flow of a real incident:
 1. Alarmo goes to ``triggered``: open an incident and notify the household's app
-   right away (critical notification with a "Lo atiendo" button).
+   right away (critical notification with a "Yo me encargo" button).
 2. Wait ``call_delay`` seconds. If the alarm is disarmed (or someone presses the
    button) in the meantime, nobody is called.
 3. Give the alarm priority: drop other queued calls and hang up any call in progress.
@@ -16,8 +16,11 @@ Flow of a real incident:
    for ``rounds`` passes (0 = until someone confirms, capped by max_chain_minutes).
 5. Someone confirms (on the phone or with the app button): stop the chain, tell
    whoever is on the phone, and update everyone's notification. Never disarms.
-6. The trunk is down (CHANUNAVAIL/CONGESTION): stop calling, say so in the
-   notifications.
+6. The line is down (registration lost, or CHANUNAVAIL/CONGESTION twice more
+   after a short wait): instead of calling, management contacts get a growing
+   burst of HA app notifications (1+10, 2+20, 3+30) following their attempts, and
+   other contacts with Telegram get a message. If the line comes back while the
+   alarm is open and nobody has taken charge, the calls resume.
 
 Messages are in Spanish: they are read and heard by the household.
 """
@@ -45,6 +48,13 @@ log = logging.getLogger(__name__)
 
 TRUNK_DOWN = {"CHANUNAVAIL", "CONGESTION"}
 ACK_PREFIX = "ACC_ACK"
+ACK_BUTTON = "Yo me encargo"
+ACK_EXPLAIN = "Si pulsas «Yo me encargo», dejaremos de llamar y avisar al resto de contactos. La alarma no se desarma."
+LINE_RETRIES = 2  # extra tries before a call failure counts as the line being down
+LINE_RETRY_S = 5
+BURST_CRITICAL_GAP_S = 2  # critical notifications need this much to each play their sound
+BURST_NORMAL_GAP_S = 1  # normal ones vibrate one by one at this pace
+BURST_CRITICAL_VOLUME = 0.6
 DISARMED_STATES = {"disarmed"}
 TRIGGERED_STATE = "triggered"
 TEST_PREFIX = "Esto es una prueba de Alarm Contact Center. "
@@ -192,6 +202,11 @@ class Incident:
         self.sensor_entity = sensor_entity
         self.test_contact = test_contact
         self.only_contacts: set[str] | None = None  # drill: the contacts taking part
+        self.line_down = False  # calls do not go out: contacts are alerted by notifications
+        self.simulate_line_down = False  # drill: behave as if the line were down
+        self.next_index = 0  # contact the chain would go to next (to resume after the line returns)
+        self.acknowledged_at = 0.0
+        self.burst_seq = 0
         self.requested_profile = ""
         self.started = time.time()
         self.status = "waiting"  # waiting, calling, acknowledged, disarmed, no_answer, trunk_down, cancelled, failed, timeout
@@ -278,6 +293,8 @@ class Engine:
         self.frigate = FrigateWatcher()
         self.media = media  # MediaStore for snapshot copies (None: no copies)
         self.listeners: list[Any] = []  # called with the Incident after every change
+        self.line_down_hint: Any = lambda: False  # set by the trunk monitor: registration lost
+        self.telegram_alert: Any = None  # async (inc, contact): Telegram message instead of a call
 
     # ----------------------------------------------------------- frigate
     async def on_person_helper(self, entity_id: str, value: str) -> None:
@@ -434,11 +451,34 @@ class Engine:
         if len(parts) != 3 or parts[0] != ACK_PREFIX:
             return
         _, incident_id, contact_id = parts
+        await self.take_charge(incident_id, contact_id, "la app")
+
+    async def take_charge(self, incident_id: str, contact_id: str, via: str) -> dict[str, Any]:
+        """Someone pressed "Yo me encargo" (HA app or Telegram).
+
+        Returns {"result": ok | already | disarmed | closed | unknown, "by", "at"} so
+        Telegram can answer the person.
+        """
         inc = self.current
-        if not inc or inc.id != incident_id or not self._active(inc):
-            return
+        if not inc or inc.id != incident_id or inc.kind not in CHAIN_KINDS:
+            return {"result": "unknown"}
+        if self.only_contacts_check(inc, contact_id) is False:
+            return {"result": "unknown"}
         contact = next((c for c in self.store.contacts() if c["id"] == contact_id), None)
-        await self._acknowledge(inc, contact["name"] if contact else "Alguien", "la app")
+        result = await self._acknowledge(inc, contact["name"] if contact else "Alguien", via)
+        return {"result": result, "by": inc.acknowledged_by, "at": hhmm(inc.acknowledged_at) if inc.acknowledged_at else ""}
+
+    def only_contacts_check(self, inc: Incident, contact_id: str) -> bool:
+        return inc.only_contacts is None or contact_id in inc.only_contacts
+
+    def contact_by_chat(self, chat_id: str) -> dict[str, Any] | None:
+        """The participating contact behind a Telegram chat (for take-charge by Telegram)."""
+        inc = self.current
+        for c in self.store.contacts():
+            if c["telegram_chat_id"] and str(c["telegram_chat_id"]) == str(chat_id):
+                if inc is None or self.only_contacts_check(inc, c["id"]):
+                    return c
+        return None
 
     async def start_test(self, contact_id: str) -> dict[str, Any]:
         """Call one contact with a test message. Never while a real alarm is running."""
@@ -458,7 +498,7 @@ class Engine:
         self._launch(inc)
         return inc.to_dict()
 
-    async def start_drill(self, contact_ids: list[str], sensor_entity: str) -> dict[str, Any]:
+    async def start_drill(self, contact_ids: list[str], sensor_entity: str, line_down: bool = False) -> dict[str, Any]:
         """Run the whole chain as if the alarm had triggered, without touching Alarmo.
 
         Only the chosen contacts are notified and called; messages say it is a drill.
@@ -482,8 +522,10 @@ class Engine:
                 sensor = sensor_entity
         inc = Incident("drill", sensor, sensor_entity)
         inc.only_contacts = set(chosen)
+        inc.simulate_line_down = bool(line_down)
         names = join_names([c["name"] for c in self.store.contacts() if c["id"] in inc.only_contacts])
-        inc.add("triggered", "Simulacro: alarma disparada", f"Sensor: {sensor} · participan {names}")
+        inc.add("triggered", "Simulacro: alarma disparada",
+                f"Sensor: {sensor} · participan {names}" + (" · simulando línea caída" if line_down else ""))
         self._launch(inc)
         return inc.to_dict()
 
@@ -577,10 +619,10 @@ class Engine:
         if inc.status in ("waiting", "calling"):
             inc.status = status
 
-    async def _run(self, inc: Incident) -> None:
+    async def _run(self, inc: Incident, resume: bool = False) -> None:
         try:
             if inc.kind in CHAIN_KINDS:
-                await self._run_alarm(inc)
+                await self._run_alarm(inc, resume)
             else:
                 await self._run_test(inc)
         except asyncio.CancelledError:
@@ -605,14 +647,14 @@ class Engine:
             self._changed(inc)
 
     # ------------------------------------------------------------ alarm
-    async def _run_alarm(self, inc: Incident) -> None:
+    async def _run_alarm(self, inc: Incident, resume: bool = False) -> None:
         settings = self.store.settings()
-        await self._notify_household(inc, "¡Alarma disparada!", f"{inc.sensor} a las {hhmm(inc.started)}.", ack_button=True)
-
-        if settings["call_delay"]:
-            inc.add("wait", f"Esperando {settings['call_delay']} s antes de llamar")
-        if await self._wait(inc, settings["call_delay"]):
-            return
+        if not resume:
+            await self._notify_household(inc, "¡Alarma disparada!", f"{inc.sensor} a las {hhmm(inc.started)}.", ack_button=True)
+            if settings["call_delay"]:
+                inc.add("wait", f"Esperando {settings['call_delay']} s antes de llamar")
+            if await self._wait(inc, settings["call_delay"]):
+                return
         inc.status = "calling"
 
         if inc.kind == "alarm":
@@ -650,14 +692,17 @@ class Engine:
             if round_no > 1:
                 inc.add("round", f"Ronda {round_no}: volviendo al primer contacto")
                 await self._notify_household(inc, "Nadie ha confirmado todavía", f"Empieza la ronda {round_no} de llamadas.", ack_button=True)
-            for contact in contacts:
+            start = inc.next_index % len(contacts) if round_no == 1 else 0
+            for index in range(start, len(contacts)):
+                contact = contacts[index]
                 if inc.stop.is_set():
                     break
                 if out_of_time():
                     timed_out = True
                     break
+                inc.next_index = (index + 1) % len(contacts)
                 outcome = await self._call_contact(inc, contact, settings)
-                if outcome in ("confirmed", "trunk_down"):
+                if outcome == "confirmed":
                     break
             if inc.stop.is_set() or timed_out:
                 break
@@ -666,12 +711,24 @@ class Engine:
                     break
 
         if not inc.stop.is_set():
-            self._finish(inc, "no_answer")
-            inc.add("no_answer", "Nadie ha confirmado el aviso")
-            await self._notify_household(inc, "Nadie ha confirmado", "La cadena de llamadas ha terminado sin confirmación.", ack_button=False)
+            if inc.line_down:
+                self._finish(inc, "trunk_down")
+                inc.add("no_answer", "Nadie ha aceptado gestionar la alarma", "Sin línea telefónica: se avisó por notificaciones")
+                await self._notify_household(inc, "Nadie ha aceptado gestionar la alarma",
+                                             "No se ha podido llamar (la línea no funciona) y nadie ha respondido a los avisos.",
+                                             ack_button=True)
+            else:
+                self._finish(inc, "no_answer")
+                inc.add("no_answer", "Nadie ha aceptado gestionar la alarma")
+                await self._notify_household(inc, "Nadie ha aceptado gestionar la alarma",
+                                             "La cadena de llamadas ha terminado sin que nadie la acepte.", ack_button=True)
 
     async def _call_contact(self, inc: Incident, contact: dict[str, Any], settings: dict[str, Any], test: bool = False) -> str:
-        """Call one contact with its retries. Returns confirmed, trunk_down or not_confirmed."""
+        """Call one contact with its retries. Returns confirmed, trunk_down, notified, skipped,
+        stopped or not_confirmed."""
+        if not test and self._line_is_down(inc):
+            await self._mark_line_down(inc, "Sin registro en el operador" if not inc.simulate_line_down else "Simulacro: línea caída")
+            return await self._alert_without_line(inc, contact)
         for attempt in range(1, contact["attempts"] + 1):
             if inc.stop.is_set():
                 return "stopped"
@@ -707,16 +764,28 @@ class Engine:
             suffix = f" ({attempt}/{contact['attempts']})" if contact["attempts"] > 1 else ""
             inc.add("call", f"Llamando a {contact['name']}{suffix}", PROFILE_TEXT[params["perfil"]].capitalize())
             self.incidents.save(inc.to_dict())
-            try:
-                response = await self.port.call(params)
-            except Exception as err:  # noqa: BLE001
-                response = {"resultado": "failed", "detalle": {"error": str(err)}}
-            finally:
-                inc.calling_number = ""
-            result = str(response.get("resultado") or "failed")
-            detail = response.get("detalle") or {}
-            dialstatus = str(detail.get("dialstatus") or "").upper()
+            retries = 0 if inc.line_down else LINE_RETRIES  # once known to be down, one try is enough
+            for retry in range(retries + 1):
+                try:
+                    response = await self.port.call(params)
+                except Exception as err:  # noqa: BLE001
+                    response = {"resultado": "failed", "detalle": {"error": str(err)}}
+                finally:
+                    inc.calling_number = ""
+                result = str(response.get("resultado") or "failed")
+                detail = response.get("detalle") or {}
+                dialstatus = str(detail.get("dialstatus") or "").upper()
+                if dialstatus not in TRUNK_DOWN or retry == retries or inc.stop.is_set():
+                    break
+                # A one-off failure is not a line down: try again shortly.
+                inc.add("retry", f"La llamada a {contact['name']} no sale: se reintenta", f"Asterisk: {dialstatus}")
+                if await self._wait(inc, LINE_RETRY_S):
+                    break
+                inc.calling_number = contact["phone"]
 
+            if inc.line_down and dialstatus not in TRUNK_DOWN and result != "failed":
+                inc.line_down = False
+                inc.add("trunk_ok", "La línea vuelve a funcionar: se vuelve a llamar")
             if inc.stop.is_set():
                 # The incident was already settled (disarmed, acknowledged by someone
                 # else, cancelled) while this call was going on: record how the call
@@ -726,7 +795,8 @@ class Engine:
 
             if result == "confirmed":
                 how = {"dtmf": "con la tecla", "voice": "por voz"}.get(str(detail.get("confirmed_by") or ""), "")
-                inc.add("confirmed", f"{contact['name']} confirma el aviso", f"Por llamada {how}".strip())
+                inc.add("confirmed", f"{contact['name']} confirma el aviso" if test else f"{contact['name']} ha aceptado gestionar la alarma",
+                        f"Por llamada {how}".strip())
                 if test:
                     inc.status = "acknowledged"
                     inc.acknowledged_by, inc.ack_via = contact["name"], "llamada"
@@ -734,17 +804,12 @@ class Engine:
                     await self._acknowledge(inc, contact["name"], "llamada", from_call=True)
                 return "confirmed"
             if dialstatus in TRUNK_DOWN:
-                inc.add("trunk_down", "La línea telefónica no funciona", f"Asterisk: {dialstatus}")
-                if not test:
-                    self._finish(inc, "trunk_down")
-                    inc.stop.set()
-                    inc.stop_reason = "trunk_down"
-                    await self._notify_household(inc, "¡Alarma! Las llamadas no funcionan",
-                                                 f"{inc.sensor} a las {hhmm(inc.started)}. La línea telefónica no funciona: no se puede llamar a nadie.",
-                                                 ack_button=True)
-                else:
+                if test:
+                    inc.add("trunk_down", "La línea telefónica no funciona", f"Asterisk: {dialstatus}")
                     inc.status = "trunk_down"
-                return "trunk_down"
+                    return "trunk_down"
+                await self._mark_line_down(inc, f"Asterisk: {dialstatus}")
+                return await self._alert_without_line(inc, contact)
             name = contact["name"]
             silent = detail.get("ended_by") == "silence"
             text = {
@@ -774,20 +839,139 @@ class Engine:
                 return "stopped"
         return "not_confirmed"
 
-    async def _acknowledge(self, inc: Incident, who: str, via: str, from_call: bool = False) -> None:
-        if inc.acknowledged_by or inc.stop.is_set():
+    # ------------------------------------------------------ without line
+    def _line_is_down(self, inc: Incident) -> bool:
+        if inc.simulate_line_down:
+            return True
+        try:
+            return bool(self.line_down_hint())
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _mark_line_down(self, inc: Incident, detail: str) -> None:
+        if inc.line_down:
             return
+        inc.line_down = True
+        inc.add("trunk_down", "La línea telefónica no funciona: se avisa por notificaciones", detail)
+        await self._notify_household(inc, "¡Alarma! Las llamadas no funcionan",
+                                     f"{inc.sensor} a las {hhmm(inc.started)}. La línea telefónica no funciona: "
+                                     "se avisa por notificaciones.", ack_button=True)
+
+    async def _alert_without_line(self, inc: Incident, contact: dict[str, Any]) -> str:
+        """The contact's turn while the line is down: a burst (management contacts with
+        the HA app), a Telegram message (others with Telegram), or the next contact."""
+        name = contact["name"]
+        if contact["can_manage"] and contact["person"] and contact["notify_service"]:
+            for attempt in range(1, contact["attempts"] + 1):
+                if inc.stop.is_set():
+                    return "stopped"
+                critical, normal = min(attempt, 3), min(10 * attempt, 30)
+                suffix = f" ({attempt}/{contact['attempts']})" if contact["attempts"] > 1 else ""
+                inc.add("burst", f"Avisando a {name} con una ráfaga de notificaciones{suffix}",
+                        f"{critical} {'crítica' if critical == 1 else 'críticas'} y {normal} normales")
+                inc.current_contact = name
+                await self._burst(inc, contact, critical, normal)
+                if inc.stop.is_set():
+                    return "stopped"
+                if attempt < contact["attempts"] and await self._wait(inc, contact["retry_wait"]):
+                    return "stopped"
+            if name not in inc.not_answered:
+                inc.not_answered.append(name)
+            return "notified"
+        if contact["telegram_chat_id"] and self.telegram_alert is not None:
+            inc.add("telegram", f"Avisando a {name} por Telegram", "Sin línea telefónica")
+            try:
+                await self.telegram_alert(inc, contact)
+            except Exception as err:  # noqa: BLE001
+                inc.add("notify_error", f"No se pudo avisar a {name} por Telegram", str(err)[:200])
+            if inc.stop.is_set():
+                return "stopped"
+            if contact["retry_wait"] and await self._wait(inc, contact["retry_wait"]):
+                return "stopped"
+            return "notified"
+        inc.add("skip", f"{name}: sin línea ni otro aviso posible, se pasa al siguiente")
+        return "skipped"
+
+    async def _burst(self, inc: Incident, contact: dict[str, Any], critical: int, normal: int) -> None:
+        """Critical notifications every 2 s (each plays its sound), then normal ones
+        every second (each vibrates). Each needs its own tag: one that replaces another
+        is shown silently. They are all removed afterwards, leaving the main one."""
+        service = contact["notify_service"]
+        prefix = "SIMULACRO · " if inc.kind == "drill" else ""
+        title = f"{prefix}¡Alarma! {inc.sensor}"
+        message = f"Sin línea telefónica: te avisamos así. {hhmm(inc.started)}.\n{ACK_EXPLAIN}"
+        actions = [{"action": f"{ACK_PREFIX}:{inc.id}:{contact['id']}", "title": ACK_BUTTON}]
+        url = self.store.settings()["notify_url"]
+        tags: list[str] = []
+        try:
+            for n in range(critical + normal):
+                if inc.stop.is_set():
+                    break
+                inc.burst_seq += 1
+                tag = f"acc_{inc.id}_b{inc.burst_seq}"
+                tags.append(tag)
+                data: dict[str, Any] = {"tag": tag, "actions": actions, "ttl": 0, "priority": "high"}
+                if n < critical:
+                    data.update(channel="alarm_stream", push={"sound": {"name": "default", "critical": 1, "volume": BURST_CRITICAL_VOLUME},
+                                                               "interruption-level": "critical"})
+                else:
+                    data["push"] = {"sound": "default", "interruption-level": "time-sensitive"}
+                if url:
+                    data["url"] = data["clickAction"] = url
+                with contextlib.suppress(Exception):
+                    await self.port.notify(service, title, message, data)
+                gap = BURST_CRITICAL_GAP_S if n < critical else BURST_NORMAL_GAP_S
+                if n < critical + normal - 1 and await self._wait(inc, gap):
+                    break
+        finally:
+            for tag in tags:
+                with contextlib.suppress(Exception):
+                    await self.port.notify(service, "", "clear_notification", {"tag": tag})
+
+    async def on_line_recovered(self) -> None:
+        """The line is back. During the chain the next contact is simply called again;
+        if the chain already ended and the alarm is still open with nobody in charge,
+        the calls resume from the contact that was next."""
+        inc = self.current
+        if not (inc and inc.kind in CHAIN_KINDS and inc.line_down and not inc.simulate_line_down):
+            return
+        if inc.closed or inc.acknowledged_by or inc.disarmed_at:
+            return
+        inc.line_down = False
+        if self._active(inc) and not inc.chain_done:
+            inc.add("trunk_ok", "La línea vuelve a funcionar: se vuelve a llamar")
+            return
+        inc.add("trunk_ok", "La línea vuelve a funcionar: se retoman las llamadas")
+        await self._notify_household(inc, "Línea recuperada", "Se retoman las llamadas de la alarma.", ack_button=True)
+        inc.chain_done = False
+        inc.stop.clear()
+        inc.task = asyncio.get_running_loop().create_task(self._run(inc, resume=True))
+        self._changed(inc)
+
+    async def _acknowledge(self, inc: Incident, who: str, via: str, from_call: bool = False) -> str:
+        """Someone takes charge: no one else is called or alerted. Never disarms."""
+        if inc.closed:
+            return "closed"
+        if inc.acknowledged_by:
+            return "already"
+        if inc.disarmed_at:
+            return "disarmed"
         inc.acknowledged_by, inc.ack_via = who, via
+        inc.acknowledged_at = time.time()
         inc.status = "acknowledged"
         if not from_call:
-            inc.add("acknowledged", f"{who} atiende la alarma", f"Desde {via}")
-        if not from_call:
-            text = ("Gracias, ya consta que estás atendiendo la alarma." if who == inc.current_contact
-                    else f"Te informo de que {who} ya está atendiendo la alarma.")
+            inc.add("acknowledged", f"{who} ha aceptado gestionar la alarma", f"Desde {via}")
+            text = ("Gracias. Has aceptado gestionar la alarma: ya no avisaremos a nadie más. La alarma sigue activa hasta que se desarme."
+                    if who == inc.current_contact else f"Te informo de que {who} ha aceptado gestionar la alarma.")
             await self._tell_current_call(inc, text)
         inc.stop_reason = "acknowledged"
         inc.stop.set()
-        await self._notify_household(inc, "Alarma atendida", f"{who} está atendiendo la alarma ({inc.sensor}, {hhmm(inc.started)}).", ack_button=False)
+        self._save_late(inc)
+        await self._notify_household(inc, "Alarma gestionada",
+                                     f"{who} ha aceptado gestionar la alarma ({inc.sensor}, {hhmm(inc.started)}). "
+                                     "Ya no se avisará a nadie más. La alarma sigue activa hasta que se desarme.",
+                                     ack_button=False)
+        return "ok"
 
     async def _halt(self, inc: Incident, status: str, text: str) -> None:
         if inc.stop.is_set():
@@ -885,13 +1069,13 @@ class Engine:
                 "push": {"sound": {"name": "default", "critical": 1, "volume": 1.0}, "interruption-level": "critical"},
             }
             if ack_button:
-                data["actions"] = [{"action": f"{ACK_PREFIX}:{inc.id}:{c['id']}", "title": "Lo atiendo"}]
+                data["actions"] = [{"action": f"{ACK_PREFIX}:{inc.id}:{c['id']}", "title": ACK_BUTTON}]
             url = self.store.settings()["notify_url"]
             if url:
                 data["url"] = url  # iOS: tapping the notification opens this dashboard view
                 data["clickAction"] = url  # Android
             try:
-                await self.port.notify(c["notify_service"], title, message, data)
+                await self.port.notify(c["notify_service"], title, f"{message}\n{ACK_EXPLAIN}" if ack_button else message, data)
             except Exception as err:  # noqa: BLE001
                 log.warning("[%s] notification to %s failed: %s", inc.id, c["name"], err)
 
